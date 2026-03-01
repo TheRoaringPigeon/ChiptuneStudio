@@ -1,14 +1,14 @@
 /**
  * app.js — ChiptuneStudio bootstrap.
  *
- * Responsibility: wire together the API client, plugin loader, sequencer,
- * and UI components. Keeps each module decoupled from the others.
+ * Wires together the API client, plugin loader, sequencer, and UI components.
+ * The SequencerLayout owns all channel strips, the ruler, and the +/– pad.
  */
 
 import * as Api from './api.js';
 import { Sequencer } from './sequencer.js';
 import { Toolbar } from './ui/Toolbar.js';
-import { ChannelStrip } from './ui/ChannelStrip.js';
+import { SequencerLayout } from './ui/SequencerLayout.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -19,8 +19,8 @@ let sequencer = null;
 /** @type {Toolbar} */
 let toolbar = null;
 
-/** @type {ChannelStrip[]} */
-let channelStrips = [];
+/** @type {SequencerLayout | null} */
+let layout = null;
 
 /** @type {{ id: number, plugin_id: string, bpm: number, steps_per_pattern: number, patterns: object[] } | null} */
 let currentProject = null;
@@ -30,10 +30,9 @@ let plugins = [];
 
 // ── DOM ──────────────────────────────────────────────────────────────────────
 
-const appEl        = document.getElementById('app');
-const toolbarEl    = document.getElementById('toolbar-mount');
-const channelsEl   = document.getElementById('channels-mount');
-const statusEl     = document.getElementById('status-bar');
+const toolbarEl  = document.getElementById('toolbar-mount');
+const channelsEl = document.getElementById('channels-mount');
+const statusEl   = document.getElementById('status-bar');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,25 +59,6 @@ async function loadSynthPlugin(pluginMeta) {
   return new SynthClass();
 }
 
-// ── Channel strips ───────────────────────────────────────────────────────────
-
-function renderChannels(pattern) {
-  channelsEl.innerHTML = '';
-  channelStrips = [];
-
-  for (let i = 0; i < pattern.channels.length; i++) {
-    const strip = new ChannelStrip(channelsEl, pattern.channels[i], i);
-    channelStrips.push(strip);
-  }
-
-  // Wire playhead updates from sequencer → all strips
-  if (sequencer) {
-    sequencer.onStep = (stepIdx) => {
-      for (const strip of channelStrips) strip.setPlayhead(stepIdx);
-    };
-  }
-}
-
 // ── Project management ───────────────────────────────────────────────────────
 
 async function refreshProjectList() {
@@ -91,7 +71,6 @@ async function loadProject(projectId) {
   const project = await Api.getProject(projectId);
   currentProject = project;
 
-  // Load & init the synth plugin for this project
   const pluginMeta = plugins.find(p => p.id === project.plugin_id);
   if (!pluginMeta) {
     setStatus(`Unknown plugin: ${project.plugin_id}`, true);
@@ -107,40 +86,39 @@ async function loadProject(projectId) {
   sequencer = new Sequencer(synth, ctx);
   sequencer.bpm = project.bpm;
   sequencer.totalSteps = project.steps_per_pattern;
+  sequencer.setLoopRegion(project.loop_start ?? 0, project.loop_end ?? project.steps_per_pattern - 1);
 
-  // Render channels from the first (only, for now) pattern
-  const pattern = project.patterns[0];
-  if (pattern) renderChannels(pattern);
+  // Build the layout (clears and rebuilds channelsEl)
+  channelsEl.innerHTML = '';
+  layout = new SequencerLayout(
+    channelsEl,
+    project,
+    (start, end) => sequencer.setLoopRegion(start, end),
+    (total) => {
+      sequencer.totalSteps = total;
+      if (currentProject) currentProject.steps_per_pattern = total;
+    },
+  );
 
-  // Hook up sequencer ↔ channel strips
-  updateSequencerChannels();
+  // Wire sequencer onStep → layout playhead
+  sequencer.onStep = (stepIdx) => layout.setPlayhead(stepIdx);
+
+  // Feed channel states to sequencer
+  sequencer.setChannels(layout.getChannelStates());
 
   toolbar.setCurrentProject(project);
   toolbar.setPlaying(false);
   setStatus(`Loaded: ${project.name}`);
 }
 
-function updateSequencerChannels() {
-  if (!sequencer) return;
-  sequencer.setChannels(channelStrips.map(s => s.sequencerState));
-}
-
 async function saveCurrentProject() {
-  if (!currentProject) return;
+  if (!currentProject || !layout) return;
 
-  const pattern = currentProject.patterns[0];
-  const payload = {
-    name: toolbar.projectName,
-    bpm: sequencer?.bpm ?? currentProject.bpm,
-    steps_per_pattern: currentProject.steps_per_pattern,
-    patterns: [
-      {
-        name: pattern?.name ?? 'Pattern 1',
-        order_index: 0,
-        channels: channelStrips.map(s => s.channelData),
-      },
-    ],
-  };
+  const payload = layout.serialize(
+    toolbar.projectName,
+    sequencer?.bpm ?? currentProject.bpm,
+    currentProject,
+  );
 
   const saved = await Api.saveProject(currentProject.id, payload);
   currentProject = saved;
@@ -158,6 +136,8 @@ async function createNewProject() {
     plugin_id: pluginMeta.id,
     bpm: 120,
     steps_per_pattern: 16,
+    loop_start: 0,
+    loop_end: 15,
   });
   await refreshProjectList();
   await loadProject(project.id);
@@ -168,7 +148,7 @@ async function createNewProject() {
 function bindToolbarEvents() {
   document.addEventListener('transport-play', () => {
     ensureAudioContext();
-    updateSequencerChannels();
+    if (layout) sequencer.setChannels(layout.getChannelStates());
     sequencer?.play();
     toolbar.setPlaying(true);
     setStatus('Playing…');
@@ -185,14 +165,6 @@ function bindToolbarEvents() {
     if (currentProject) currentProject.bpm = e.detail.bpm;
   });
 
-  document.addEventListener('steps-change', (e) => {
-    const steps = e.detail.steps;
-    if (sequencer) sequencer.totalSteps = steps;
-    if (currentProject) currentProject.steps_per_pattern = steps;
-    for (const strip of channelStrips) strip.resize(steps);
-    updateSequencerChannels();
-  });
-
   document.addEventListener('project-new', createNewProject);
   document.addEventListener('project-save', saveCurrentProject);
 
@@ -205,8 +177,8 @@ function bindToolbarEvents() {
     await Api.deleteProject(e.detail.projectId);
     setStatus('Project deleted.');
     currentProject = null;
+    layout = null;
     channelsEl.innerHTML = '';
-    channelStrips = [];
     await refreshProjectList();
   });
 }
@@ -225,18 +197,15 @@ async function boot() {
 
   toolbar = new Toolbar(toolbarEl, {
     bpm: 120,
-    steps: 16,
     projectName: 'Untitled',
   });
 
   bindToolbarEvents();
 
-  // Load the project list and auto-load the most recent one
   const projectList = await refreshProjectList();
   if (projectList.length > 0) {
     await loadProject(projectList[0].id);
   } else {
-    // No projects yet — create a default one
     await createNewProject();
   }
 

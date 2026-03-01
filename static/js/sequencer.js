@@ -7,9 +7,12 @@
  *   This decouples the (imprecise) JS timer from the (sample-accurate)
  *   Web Audio clock, giving tight timing without audio glitches.
  *
+ * Loop region: playback wraps between #loopStart and #loopEnd (inclusive).
+ *
  * Usage:
- *   const seq = new Sequencer(synth, channels);
+ *   const seq = new Sequencer(synth, ctx);
  *   seq.bpm = 140;
+ *   seq.setLoopRegion(0, 15);
  *   seq.play();
  *   seq.stop();
  */
@@ -29,6 +32,9 @@ export class Sequencer {
   #lookahead = 0.1;        // seconds to look ahead
   #scheduleInterval = 25;  // ms between scheduler ticks
 
+  #loopStart = 0;
+  #loopEnd   = 15;
+
   #currentStep = 0;
   #nextStepTime = 0;       // AudioContext time of the next step
   #timerID = null;
@@ -43,7 +49,7 @@ export class Sequencer {
    */
   constructor(synth, ctx) {
     this.#synth = synth;
-    this.#ctx = ctx;
+    this.#ctx   = ctx;
   }
 
   get bpm() { return this.#bpm; }
@@ -52,10 +58,26 @@ export class Sequencer {
   get totalSteps() { return this.#totalSteps; }
   set totalSteps(value) {
     this.#totalSteps = value;
-    if (this.#currentStep >= value) this.#currentStep = 0;
+    // Clamp loop end to new total
+    if (this.#loopEnd >= value) this.#loopEnd = value - 1;
+    if (this.#currentStep > this.#loopEnd) this.#currentStep = this.#loopStart;
   }
 
   get isPlaying() { return this.#isPlaying; }
+
+  /**
+   * Set the loop region. Playback wraps from loopEnd+1 back to loopStart.
+   * @param {number} start  First step of the loop (inclusive)
+   * @param {number} end    Last step of the loop (inclusive)
+   */
+  setLoopRegion(start, end) {
+    this.#loopStart = Math.max(0, start);
+    this.#loopEnd   = Math.min(this.#totalSteps - 1, end);
+    // If current step is outside the new loop region, jump to start
+    if (this.#currentStep < this.#loopStart || this.#currentStep > this.#loopEnd) {
+      this.#currentStep = this.#loopStart;
+    }
+  }
 
   /** Replace the channel data (called when project loads or UI changes). */
   setChannels(channels) {
@@ -73,11 +95,10 @@ export class Sequencer {
 
     while (this.#nextStepTime < ctx.currentTime + this.#lookahead) {
       const step = this.#currentStep;
-      const t = this.#nextStepTime;
+      const t    = this.#nextStepTime;
 
       // Notify UI of the current playhead position (fire-and-forget)
       if (this.onStep) {
-        // Use postMessage trick to run the UI update outside the audio thread
         const s = step;
         setTimeout(() => this.onStep(s), 0);
       }
@@ -99,7 +120,9 @@ export class Sequencer {
         );
       }
 
-      this.#currentStep = (this.#currentStep + 1) % this.#totalSteps;
+      // Advance step, wrapping at loopEnd + 1 → loopStart
+      const loopLen = this.#loopEnd - this.#loopStart + 1;
+      this.#currentStep = this.#loopStart + ((step - this.#loopStart + 1) % loopLen);
       this.#nextStepTime += stepDuration;
     }
 
@@ -108,8 +131,8 @@ export class Sequencer {
 
   play() {
     if (this.#isPlaying) return;
-    this.#isPlaying = true;
-    this.#currentStep = 0;
+    this.#isPlaying   = true;
+    this.#currentStep = this.#loopStart;
     this.#nextStepTime = this.#ctx.currentTime;
     this.#schedule();
   }
@@ -119,7 +142,7 @@ export class Sequencer {
     this.#isPlaying = false;
     clearTimeout(this.#timerID);
     this.#timerID = null;
-    this.#currentStep = 0;
+    this.#currentStep = this.#loopStart;
     if (this.onStep) this.onStep(-1); // signal UI to clear playhead
   }
 }

@@ -46,6 +46,7 @@ def _build_default_pattern(plugin_id: str, steps_per_pattern: int) -> Pattern:
             volume=ch_def.volume,
             pan=ch_def.pan,
             muted=False,
+            locked_ranges=[],
         )
         channel.steps = [
             Step(step_index=i, active=False, pitch=ch_def.default_pitch, velocity=100)
@@ -65,11 +66,14 @@ async def list_projects(db: AsyncSession = Depends(get_db)):
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_db)):
+    loop_end = payload.loop_end if payload.loop_end >= 0 else payload.steps_per_pattern - 1
     project = Project(
         name=payload.name,
         plugin_id=payload.plugin_id,
         bpm=payload.bpm,
         steps_per_pattern=payload.steps_per_pattern,
+        loop_start=payload.loop_start,
+        loop_end=loop_end,
     )
     project.patterns.append(_build_default_pattern(payload.plugin_id, payload.steps_per_pattern))
     db.add(project)
@@ -95,6 +99,8 @@ async def save_project(project_id: int, payload: ProjectSave, db: AsyncSession =
     project.name = payload.name
     project.bpm = payload.bpm
     project.steps_per_pattern = payload.steps_per_pattern
+    project.loop_start = payload.loop_start
+    project.loop_end = payload.loop_end
 
     # Wipe existing patterns (cascade deletes channels + steps)
     project.patterns.clear()
@@ -108,6 +114,7 @@ async def save_project(project_id: int, payload: ProjectSave, db: AsyncSession =
                 volume=ch_data.volume,
                 pan=ch_data.pan,
                 muted=ch_data.muted,
+                locked_ranges=[r.model_dump() for r in ch_data.locked_ranges],
             )
             channel.steps = [
                 Step(

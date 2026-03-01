@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -17,6 +17,8 @@ class Project(Base):
     plugin_id: Mapped[str] = mapped_column(String(64), nullable=False)
     bpm: Mapped[int] = mapped_column(Integer, default=120)
     steps_per_pattern: Mapped[int] = mapped_column(Integer, default=16)
+    loop_start: Mapped[int] = mapped_column(Integer, default=0)
+    loop_end: Mapped[int] = mapped_column(Integer, default=15)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -49,6 +51,7 @@ class Channel(Base):
     volume: Mapped[float] = mapped_column(Float, default=0.8)
     pan: Mapped[float] = mapped_column(Float, default=0.0)
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
+    locked_ranges: Mapped[list] = mapped_column(JSON, default=list)
 
     pattern: Mapped["Pattern"] = relationship("Pattern", back_populates="channels")
     steps: Mapped[list["Step"]] = relationship(

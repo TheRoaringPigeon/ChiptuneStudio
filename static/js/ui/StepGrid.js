@@ -1,14 +1,10 @@
 /**
  * StepGrid — a row of toggle buttons representing the steps for one channel.
  *
- * Each button can be toggled on/off. Dispatches a custom 'step-toggle' event
- * on the element so parent components can react without coupling.
+ * Each button carries data-step and data-channel attributes so that
+ * SelectionManager can identify it for 2D drag-selection.
  *
- * @example
- *   const grid = new StepGrid(container, 16, stepDataArray);
- *   grid.element.addEventListener('step-toggle', e => {
- *     const { stepIndex, active } = e.detail;
- *   });
+ * Dispatches 'step-toggle' on the element so parent components can react.
  */
 export class StepGrid {
   /** @type {HTMLElement} */
@@ -21,14 +17,17 @@ export class StepGrid {
   #buttons = [];
 
   #activePlayheadIndex = -1;
+  #channelIndex = 0;
 
   /**
-   * @param {HTMLElement} container  Parent element to append into
-   * @param {number}      stepCount  Number of steps (16 or 32)
-   * @param {object[]}    steps      Initial step data array from the backend
+   * @param {HTMLElement} container
+   * @param {number}      stepCount
+   * @param {object[]}    steps        Initial step data array
+   * @param {number}      channelIndex Used for data-channel attribute
    */
-  constructor(container, stepCount, steps) {
+  constructor(container, stepCount, steps, channelIndex = 0) {
     this.#steps = steps;
+    this.#channelIndex = channelIndex;
     this.element = document.createElement('div');
     this.element.className = 'step-grid';
     this.#render(stepCount);
@@ -39,23 +38,29 @@ export class StepGrid {
     this.#buttons = [];
     this.element.innerHTML = '';
     for (let i = 0; i < stepCount; i++) {
-      const btn = document.createElement('button');
-      btn.className = 'step-btn';
-      btn.dataset.index = String(i);
-
-      const stepData = this.#steps[i] ?? { active: false };
-      if (stepData.active) btn.classList.add('active');
-
-      // Group steps visually into beats (4 per beat)
-      if (i % 4 === 0) btn.classList.add('beat-start');
-
-      btn.addEventListener('click', () => this.#onToggle(i, btn));
-      this.element.appendChild(btn);
-      this.#buttons.push(btn);
+      this.element.appendChild(this.#makeButton(i));
     }
   }
 
+  #makeButton(i) {
+    const btn = document.createElement('button');
+    btn.className = 'step-btn';
+    btn.dataset.index   = String(i);
+    btn.dataset.step    = String(i);
+    btn.dataset.channel = String(this.#channelIndex);
+
+    const stepData = this.#steps[i] ?? { active: false };
+    if (stepData.active) btn.classList.add('active');
+    if (i % 4 === 0) btn.classList.add('beat-start');
+
+    btn.addEventListener('click', () => this.#onToggle(i, btn));
+    this.#buttons.push(btn);
+    return btn;
+  }
+
   #onToggle(index, btn) {
+    // Clicks are blocked on locked steps
+    if (btn.classList.contains('locked')) return;
     const step = this.#steps[index];
     if (!step) return;
     step.active = !step.active;
@@ -78,11 +83,50 @@ export class StepGrid {
     }
   }
 
-  /** Rebuild grid when step count changes. */
+  /**
+   * Apply locked-range highlighting. Steps inside any range get .locked
+   * and cannot be clicked.
+   * @param {{ start: number, end: number }[]} ranges
+   */
+  setLockedRanges(ranges) {
+    for (const btn of this.#buttons) {
+      btn.classList.remove('locked');
+    }
+    for (const { start, end } of ranges) {
+      for (let i = start; i <= end && i < this.#buttons.length; i++) {
+        this.#buttons[i]?.classList.add('locked');
+      }
+    }
+  }
+
+  /**
+   * Apply/remove .selected on a set of step indices.
+   * @param {Set<number>} stepSet
+   */
+  setSelected(stepSet) {
+    for (let i = 0; i < this.#buttons.length; i++) {
+      this.#buttons[i]?.classList.toggle('selected', stepSet.has(i));
+    }
+  }
+
+  /** Rebuild grid when step count changes (growing or shrinking). */
   resize(newStepCount, steps) {
     this.#steps = steps;
+    const old = this.#buttons.length;
     this.#activePlayheadIndex = -1;
-    this.#render(newStepCount);
+
+    if (newStepCount > old) {
+      // Append new buttons
+      for (let i = old; i < newStepCount; i++) {
+        this.element.appendChild(this.#makeButton(i));
+      }
+    } else {
+      // Remove excess buttons
+      while (this.#buttons.length > newStepCount) {
+        const btn = this.#buttons.pop();
+        btn.remove();
+      }
+    }
   }
 
   /** Read current step data (returns reference, not copy). */

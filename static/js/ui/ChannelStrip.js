@@ -3,14 +3,50 @@ import { StepGrid } from './StepGrid.js';
 /**
  * ChannelStrip — one row in the sequencer for a single instrument channel.
  *
+ * In the new 3-column layout, the label/controls live in the fixed left
+ * column while the step grid lives in the scrollable center column.
+ * This class appends to two separate containers.
+ *
  * State management: each strip owns a persistent #liveState object.
  * The Sequencer holds a direct reference to this object (via sequencerState),
  * so any UI change (mute, volume) is visible to the Sequencer on its very
  * next scheduling tick — no snapshots, no events, no getter tricks.
  */
+
+function mergeRanges(ranges) {
+  if (!ranges.length) return [];
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    if (sorted[i].start <= last.end + 1) {
+      last.end = Math.max(last.end, sorted[i].end);
+    } else {
+      merged.push({ ...sorted[i] });
+    }
+  }
+  return merged;
+}
+
+function subtractRange(ranges, start, end) {
+  const result = [];
+  for (const r of ranges) {
+    if (r.end < start || r.start > end) {
+      result.push({ ...r });
+    } else {
+      if (r.start < start) result.push({ start: r.start, end: start - 1 });
+      if (r.end > end)     result.push({ start: end + 1, end: r.end });
+    }
+  }
+  return result;
+}
+
 export class ChannelStrip {
-  /** @type {HTMLElement} */
-  element;
+  /** @type {HTMLElement} Label/control element (in left column) */
+  labelElement;
+
+  /** @type {HTMLElement} Grid row element (in scroll column) */
+  gridElement;
 
   /** @type {StepGrid} */
   #grid;
@@ -28,43 +64,46 @@ export class ChannelStrip {
   /** @type {number} */
   #channelIndex;
 
+  /** @type {{ start: number, end: number }[]} */
+  #lockedRanges = [];
+
   /**
-   * @param {HTMLElement} container
-   * @param {object}      channelData   Channel object from the backend (with steps[])
+   * @param {HTMLElement} labelContainer   Fixed left column
+   * @param {HTMLElement} gridContainer    Scrollable center column
+   * @param {object}      channelData      Channel object from the backend (with steps[])
    * @param {number}      channelIndex
    */
-  constructor(container, channelData, channelIndex) {
+  constructor(labelContainer, gridContainer, channelData, channelIndex) {
     this.#data = channelData;
     this.#channelIndex = channelIndex;
+    this.#lockedRanges = (channelData.locked_ranges ?? []).map(r => ({ ...r }));
 
     this.#liveState = {
-      waveformType: channelData.waveform_type,
-      volume:       channelData.volume,
-      pan:          channelData.pan ?? 0,
-      muted:        channelData.muted,
-      steps:        channelData.steps, // array reference — step toggles are live automatically
+      waveformType:  channelData.waveform_type,
+      volume:        channelData.volume,
+      pan:           channelData.pan ?? 0,
+      muted:         channelData.muted,
+      steps:         channelData.steps,
+      lockedRanges:  this.#lockedRanges,
     };
 
-    this.element = document.createElement('div');
-    this.element.className = 'channel-strip';
-    this.#render();
-    container.appendChild(this.element);
+    this.#renderLabel(labelContainer);
+    this.#renderGrid(gridContainer);
+    this.#grid.setLockedRanges(this.#lockedRanges);
   }
 
+  // ── Rendering ────────────────────────────────────────────────────────────────
+
   #waveformIcon(type) {
-    const icons = {
-      square:   '▊',
-      triangle: '△',
-      sawtooth: '⟋',
-      noise:    '≋',
-    };
+    const icons = { square: '▊', triangle: '△', sawtooth: '⟋', noise: '≋' };
     return icons[type] ?? '?';
   }
 
-  #render() {
+  #renderLabel(container) {
     const d = this.#data;
-
-    this.element.innerHTML = `
+    const el = document.createElement('div');
+    el.className = 'ch-label-row';
+    el.innerHTML = `
       <div class="ch-label">
         <span class="ch-wave-badge" title="${d.waveform_type}">${this.#waveformIcon(d.waveform_type)}</span>
         <span class="ch-name">${d.name}</span>
@@ -73,27 +112,32 @@ export class ChannelStrip {
         <button class="ch-mute-btn${d.muted ? ' muted' : ''}" title="Mute">M</button>
         <input  class="ch-volume" type="range" min="0" max="1" step="0.01" value="${d.volume}" title="Volume">
       </div>
-      <div class="ch-grid-wrap"></div>
     `;
+    this.labelElement = el;
+    container.appendChild(el);
 
-    const gridWrap = this.element.querySelector('.ch-grid-wrap');
-    this.#grid = new StepGrid(gridWrap, d.steps.length, d.steps);
-
-    // Mute toggle — update both #data and #liveState
-    const muteBtn = this.element.querySelector('.ch-mute-btn');
-    muteBtn.addEventListener('click', () => {
+    el.querySelector('.ch-mute-btn').addEventListener('click', () => {
       d.muted = !d.muted;
       this.#liveState.muted = d.muted;
-      muteBtn.classList.toggle('muted', d.muted);
+      el.querySelector('.ch-mute-btn').classList.toggle('muted', d.muted);
     });
 
-    // Volume — update both #data and #liveState
-    const volInput = this.element.querySelector('.ch-volume');
-    volInput.addEventListener('input', () => {
-      d.volume = parseFloat(volInput.value);
+    el.querySelector('.ch-volume').addEventListener('input', (ev) => {
+      d.volume = parseFloat(ev.target.value);
       this.#liveState.volume = d.volume;
     });
   }
+
+  #renderGrid(container) {
+    const el = document.createElement('div');
+    el.className = 'ch-grid-row';
+    this.gridElement = el;
+    container.appendChild(el);
+
+    this.#grid = new StepGrid(el, this.#data.steps.length, this.#data.steps, this.#channelIndex);
+  }
+
+  // ── Public API ───────────────────────────────────────────────────────────────
 
   /** Highlight the current playhead column. */
   setPlayhead(stepIndex) {
@@ -112,8 +156,27 @@ export class ChannelStrip {
       });
     }
     this.#data.steps = this.#data.steps.slice(0, newStepCount);
-    this.#liveState.steps = this.#data.steps; // keep liveState in sync after slice
+    this.#liveState.steps = this.#data.steps;
     this.#grid.resize(newStepCount, this.#data.steps);
+  }
+
+  /** Add a locked range (merges with existing). */
+  addLockedRange(start, end) {
+    this.#lockedRanges = mergeRanges([...this.#lockedRanges, { start, end }]);
+    this.#liveState.lockedRanges = this.#lockedRanges;
+    this.#grid.setLockedRanges(this.#lockedRanges);
+  }
+
+  /** Remove a locked range (subtracts from existing). */
+  removeLockedRange(start, end) {
+    this.#lockedRanges = subtractRange(this.#lockedRanges, start, end);
+    this.#liveState.lockedRanges = this.#lockedRanges;
+    this.#grid.setLockedRanges(this.#lockedRanges);
+  }
+
+  /** @returns {{ start: number, end: number }[]} */
+  get lockedRanges() {
+    return this.#lockedRanges;
   }
 
   /**
@@ -135,6 +198,7 @@ export class ChannelStrip {
       volume:        this.#data.volume,
       pan:           this.#data.pan ?? 0,
       muted:         this.#data.muted,
+      locked_ranges: this.#lockedRanges.map(r => ({ start: r.start, end: r.end })),
       steps: this.#data.steps.map((s, i) => ({
         step_index: i,
         active:     s.active,

@@ -5,7 +5,6 @@
  *   'transport-play'   — user pressed Play
  *   'transport-stop'   — user pressed Stop
  *   'bpm-change'       — { detail: { bpm: number } }
- *   'steps-change'     — { detail: { steps: number } }
  *   'project-new'      — user clicked New
  *   'project-save'     — user clicked Save
  *   'project-load'     — { detail: { projectId: number } }
@@ -20,7 +19,7 @@ export class Toolbar {
 
   /**
    * @param {HTMLElement} container
-   * @param {{ bpm: number, steps: number, projectName: string }} initialState
+   * @param {{ bpm: number, projectName: string }} initialState
    */
   constructor(container, initialState) {
     this.element = document.createElement('div');
@@ -30,7 +29,7 @@ export class Toolbar {
     container.appendChild(this.element);
   }
 
-  #render({ bpm, steps }) {
+  #render({ bpm }) {
     this.element.innerHTML = `
       <div class="toolbar-section toolbar-title">
         <span class="app-title">CHIPTUNE STUDIO</span>
@@ -54,12 +53,6 @@ export class Toolbar {
           <input class="bpm-slider" type="range" min="20" max="300" step="1" value="${bpm}">
           <span class="bpm-display">${bpm}</span>
         </label>
-        <label class="ctrl-label">
-          STEPS
-          <select class="steps-select">
-            ${[8, 16, 32].map(n => `<option value="${n}"${n === steps ? ' selected' : ''}>${n}</option>`).join('')}
-          </select>
-        </label>
       </div>
     `;
 
@@ -82,11 +75,6 @@ export class Toolbar {
       const bpm = parseInt(bpmSlider.value, 10);
       bpmDisplay.textContent = bpm;
       this.#emit('bpm-change', { bpm });
-    });
-
-    const stepsSelect = el.querySelector('.steps-select');
-    stepsSelect.addEventListener('change', () => {
-      this.#emit('steps-change', { steps: parseInt(stepsSelect.value, 10) });
     });
 
     el.querySelector('.btn-new').addEventListener('click', () => this.#emit('project-new'));
@@ -129,10 +117,6 @@ export class Toolbar {
     const bpmDisplay = this.element.querySelector('.bpm-display');
     if (bpmDisplay) bpmDisplay.textContent = project.bpm;
 
-    const stepsSelect = this.element.querySelector('.steps-select');
-    if (stepsSelect) stepsSelect.value = String(project.steps_per_pattern);
-
-    // Select this project in the dropdown
     const sel = this.element.querySelector('.project-select');
     if (sel) sel.value = String(project.id);
   }
