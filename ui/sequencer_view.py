@@ -10,12 +10,13 @@ SequencerView — 3-column layout:
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QObject, QEvent, QPoint, QRect, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
-    QPushButton, QLabel, QFrame,
+    QPushButton, QLabel, QFrame, QMenu, QSplitter,
 )
 
-from models.schemas import ChannelState, StepState
+from models.schemas import ChannelState, StepState, DEFAULT_SYNTH_PARAMS, NOISE_SYNTH_PARAMS
 from ui.channel_strip import ChannelStrip, LABEL_W
 from ui.timeline_ruler import TimelineRuler
 from ui.channel_settings import ChannelSettingsPanel
@@ -23,7 +24,8 @@ from ui.step_grid import StepGrid, _step_x, STEP_W
 from ui import theme
 
 RULER_SPACER_H = 36
-RIGHT_W = 56
+RIGHT_W        = 56
+COLLAPSED_W    = 28   # icon-only collapsed width of the left panel
 
 
 class _SelectionFilter(QObject):
@@ -64,6 +66,10 @@ class SequencerView(QWidget):
         self._sel_dragged: bool = False   # True only after mouse moves away from origin
         self._sel_filter = _SelectionFilter(self)
 
+        # Left-panel collapse state
+        self._panel_collapsed: bool = False
+        self._saved_panel_width: int = LABEL_W
+
         # Auto-scroll state
         self._scroll_dx: int = 0
         self._auto_scroll_timer = QTimer(self)
@@ -84,9 +90,9 @@ class SequencerView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Left panel
+        # Left panel (width controlled by splitter, not fixed)
         self._left_panel = QWidget()
-        self._left_panel.setFixedWidth(LABEL_W)
+        self._left_panel.setMinimumWidth(COLLAPSED_W)
         self._left_panel.setStyleSheet(f"background: {theme.BG_PANEL};")
         self._left_lay = QVBoxLayout(self._left_panel)
         self._left_lay.setContentsMargins(0, 0, 0, 0)
@@ -97,6 +103,25 @@ class SequencerView(QWidget):
         ruler_spacer.setFixedHeight(RULER_SPACER_H)
         ruler_spacer.setStyleSheet(f"background: {theme.BG_PANEL};")
         self._left_lay.addWidget(ruler_spacer)
+
+        # Sub-container for channel label widgets (populated by _build_strips)
+        self._channels_container = QWidget()
+        self._left_channels_lay = QVBoxLayout(self._channels_container)
+        self._left_channels_lay.setContentsMargins(0, 0, 0, 0)
+        self._left_channels_lay.setSpacing(0)
+        self._left_lay.addWidget(self._channels_container)
+
+        # Add channel button
+        self._add_channel_btn = QPushButton("+ ADD CHANNEL")
+        self._add_channel_btn.setFixedHeight(28)
+        self._add_channel_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {theme.GREEN};"
+            f" border: 1px dashed {theme.GREEN}; font-size: 10px; margin: 4px; }}"
+            f"QPushButton:hover {{ background: {theme.BG_STRIP}; }}"
+        )
+        self._add_channel_btn.clicked.connect(self._show_add_channel_menu)
+        self._left_lay.addWidget(self._add_channel_btn)
+
         self._left_lay.addStretch(1)
 
         # Scroll area (center)
@@ -140,38 +165,61 @@ class SequencerView(QWidget):
             right_lay.addWidget(btn)
         right_lay.addStretch(1)
 
-        root.addWidget(self._left_panel)
-        root.addWidget(self._scroll, 1)
+        # Splitter — left panel is resizable, scroll area takes remaining space
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setHandleWidth(3)
+        self._splitter.setStyleSheet(
+            f"QSplitter::handle:horizontal {{ background: {theme.BORDER}; }}"
+            f"QSplitter::handle:horizontal:hover {{ background: {theme.GREEN}; }}"
+        )
+        self._splitter.addWidget(self._left_panel)
+        self._splitter.addWidget(self._scroll)
+        self._splitter.setSizes([LABEL_W, 800])
+        self._splitter.setCollapsible(0, False)
+        self._splitter.setCollapsible(1, False)
+        self._scroll.setMinimumWidth(150)
+
+        root.addWidget(self._splitter, 1)
         root.addWidget(right)
 
     def _build_strips(self) -> None:
-        # Clear existing
+        # Detach and destroy existing strip widgets
         for strip in self._strips:
             strip.label_widget.setParent(None)
-            strip.grid_widget.setParent(None)
+            strip.label_widget.deleteLater()
+            if hasattr(strip, "_row_widget"):
+                strip._row_widget.setParent(None)
+                strip._row_widget.deleteLater()
         self._strips.clear()
-        while self._left_lay.count() > 2:  # keep spacer + stretch
-            item = self._left_lay.takeAt(1)
-            if item.widget():
-                item.widget().deleteLater()
+
+        # Explicit grid layout clear (safety net)
         while self._grid_lay.count():
             item = self._grid_lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         for i, state in enumerate(self._channel_states):
-            strip = ChannelStrip(state, self._settings_panel, i)
+            self._append_strip(state, i)
 
-            # Install selection event filter
-            strip.grid_widget.installEventFilter(self._sel_filter)
-            strip.grid_widget.setProperty("channel_index", i)
+    def _append_strip(self, state: ChannelState, idx: int) -> None:
+        """Create a ChannelStrip, wire it up, and insert it into both panels."""
+        strip = ChannelStrip(state, self._settings_panel, idx)
 
-            # Add label to left panel (insert before stretch at end)
-            self._left_lay.insertWidget(self._left_lay.count() - 1, strip.label_widget)
-            # Add grid row
-            self._grid_lay.addWidget(self._grid_widget_row(strip, i))
+        strip.grid_widget.installEventFilter(self._sel_filter)
+        strip.grid_widget.setProperty("channel_index", idx)
+        strip.remove_requested.connect(lambda s=strip: self._remove_channel(s))
 
-            self._strips.append(strip)
+        # Left panel: label widget into the channels sub-layout
+        self._left_channels_lay.addWidget(strip.label_widget)
+        if self._panel_collapsed:
+            strip.collapse()
+
+        # Center scroll: grid row
+        row = self._grid_widget_row(strip, idx)
+        strip._row_widget = row
+        self._grid_lay.addWidget(row)
+
+        self._strips.append(strip)
 
     def _grid_widget_row(self, strip: ChannelStrip, idx: int) -> QWidget:
         row = QWidget()
@@ -182,6 +230,89 @@ class SequencerView(QWidget):
         lay.addWidget(strip.grid_widget)
         lay.addStretch(1)
         return row
+
+    # ── Add / Remove channels ─────────────────────────────────────────────────
+
+    def _show_add_channel_menu(self) -> None:
+        menu = QMenu(self)
+        options = [
+            ("▬  Pulse (Square)",  "square"),
+            ("▲  Triangle",        "triangle"),
+            ("∿  Sawtooth",        "sawtooth"),
+            ("⊞  Noise",           "noise"),
+        ]
+        for label, wtype in options:
+            act = QAction(label, menu)
+            act.triggered.connect(lambda _, w=wtype: self._add_channel(w))
+            menu.addAction(act)
+        btn = self._add_channel_btn
+        menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
+
+    def _add_channel(self, waveform_type: str) -> None:
+        is_noise = waveform_type == "noise"
+        params = dict(NOISE_SYNTH_PARAMS if is_noise else DEFAULT_SYNTH_PARAMS)
+        default_names = {
+            "square":   "Pulse",
+            "triangle": "Triangle",
+            "sawtooth": "Sawtooth",
+            "noise":    "Noise",
+        }
+        steps = [StepState() for _ in range(self._total_steps)]
+        state = ChannelState(
+            name=default_names.get(waveform_type, "Channel"),
+            waveform_type=waveform_type,
+            volume=0.8,
+            pan=0.0,
+            muted=False,
+            steps=steps,
+            locked_ranges=[],
+            synth_params=params,
+        )
+        self._channel_states.append(state)
+        self._append_strip(state, len(self._strips))
+
+    def _remove_channel(self, strip: ChannelStrip) -> None:
+        if len(self._strips) <= 1:
+            return  # always keep at least one channel
+        self._clear_sel_state()
+        # Detach widgets
+        strip.label_widget.setParent(None)
+        strip.label_widget.deleteLater()
+        strip._row_widget.setParent(None)
+        strip._row_widget.deleteLater()
+        # Update state lists
+        self._channel_states.remove(strip.live_state)
+        self._strips.remove(strip)
+        # Re-index remaining strips
+        for i, s in enumerate(self._strips):
+            s._channel_index = i
+            s.grid_widget.setProperty("channel_index", i)
+
+    # ── Left panel collapse / expand ──────────────────────────────────────────
+
+    def toggle_left_panel(self) -> None:
+        if self._panel_collapsed:
+            self.expand_left_panel()
+        else:
+            self.collapse_left_panel()
+
+    def collapse_left_panel(self) -> None:
+        self._panel_collapsed   = True
+        self._saved_panel_width = max(self._splitter.sizes()[0], LABEL_W)
+        for strip in self._strips:
+            strip.collapse()
+        self._add_channel_btn.hide()
+        total = self._splitter.width()
+        self._splitter.setSizes([COLLAPSED_W, total - COLLAPSED_W])
+
+    def expand_left_panel(self) -> None:
+        self._panel_collapsed = False
+        for strip in self._strips:
+            strip.expand()
+        self._add_channel_btn.show()
+        total  = self._splitter.width()
+        restore = min(self._saved_panel_width, total - 150)
+        self._splitter.setSizes([restore, total - restore])
 
     # ── Context bar ───────────────────────────────────────────────────────────
 

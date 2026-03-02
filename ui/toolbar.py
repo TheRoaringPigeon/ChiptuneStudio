@@ -15,13 +15,14 @@ from ui import theme
 
 
 class ToolbarWidget(QWidget):
-    play_clicked    = pyqtSignal()
-    stop_clicked    = pyqtSignal()
-    bpm_changed     = pyqtSignal(int)
-    project_new     = pyqtSignal()
-    project_save    = pyqtSignal(str)       # emits current project name
-    project_load    = pyqtSignal(int)       # emits project id
-    project_delete  = pyqtSignal(int)       # emits project id
+    play_clicked      = pyqtSignal()
+    stop_clicked      = pyqtSignal()
+    bpm_changed       = pyqtSignal(int)
+    project_new       = pyqtSignal()
+    project_save      = pyqtSignal(str)       # emits current project name
+    project_load      = pyqtSignal(int)       # emits project id
+    project_delete    = pyqtSignal(int)       # emits project id
+    left_panel_toggle = pyqtSignal()          # collapse / expand channel strip panel
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,6 +38,20 @@ class ToolbarWidget(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(6)
+
+        # Left-panel collapse/expand button
+        self._panel_btn = QPushButton("◀")
+        self._panel_btn.setCheckable(True)
+        self._panel_btn.setFixedSize(22, 22)
+        self._panel_btn.setToolTip("Collapse / expand channel panel")
+        self._panel_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {theme.FG_DIM}; border: none; font-size: 13px; padding: 0; }}"
+            f"QPushButton:checked {{ color: {theme.GREEN}; }}"
+        )
+        self._panel_btn.toggled.connect(self._on_panel_toggle)
+        lay.addWidget(self._panel_btn)
+
+        self._separator(lay)
 
         # App title — fixed, always visible
         title = QLabel("CHIPTUNE STUDIO")
@@ -123,6 +138,10 @@ class ToolbarWidget(QWidget):
         lay.addWidget(sep)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
+
+    def _on_panel_toggle(self, checked: bool) -> None:
+        self._panel_btn.setText("▶" if checked else "◀")
+        self.left_panel_toggle.emit()
 
     def _on_play(self) -> None:
         self._play_btn.setChecked(True)

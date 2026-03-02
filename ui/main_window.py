@@ -49,6 +49,9 @@ class MainWindow(QMainWindow):
         # Status bar
         self.statusBar().showMessage("Starting...")
 
+        # Left-panel collapse state (preserved across project loads)
+        self._panel_collapsed: bool = False
+
         # Wire toolbar signals
         self._toolbar.play_clicked.connect(self._on_play)
         self._toolbar.stop_clicked.connect(self._on_stop)
@@ -57,6 +60,7 @@ class MainWindow(QMainWindow):
         self._toolbar.project_save.connect(self._on_project_save)
         self._toolbar.project_load.connect(self._on_project_load)
         self._toolbar.project_delete.connect(self._on_project_delete)
+        self._toolbar.left_panel_toggle.connect(self._on_left_panel_toggle)
 
         # Wire scheduler → UI (queued cross-thread)
         self._scheduler.signals.step_changed.connect(
@@ -166,6 +170,8 @@ class MainWindow(QMainWindow):
 
         self._seq_view = SequencerView(channel_states)
         self._seq_container_lay.addWidget(self._seq_view)
+        if self._panel_collapsed:
+            self._seq_view.collapse_left_panel()
 
         # Wire loop ruler → scheduler
         self._seq_view._ruler.loop_changed.connect(self._on_loop_changed)
@@ -307,6 +313,11 @@ class MainWindow(QMainWindow):
             self._toolbar.set_project_list(projects)
             if projects:
                 self._load_project(projects[0]["id"])
+
+    def _on_left_panel_toggle(self) -> None:
+        if self._seq_view:
+            self._seq_view.toggle_left_panel()
+            self._panel_collapsed = self._seq_view._panel_collapsed
 
     # ── Scheduler → UI ────────────────────────────────────────────────────────
 

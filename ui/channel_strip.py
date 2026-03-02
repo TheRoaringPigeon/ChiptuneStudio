@@ -4,9 +4,9 @@ ChannelStrip — manages both the left-panel label widget and the step grid widg
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtCore import Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel,
+    QWidget, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSlider, QSizePolicy,
 )
 
@@ -25,7 +25,7 @@ WAVEFORM_ICONS = {
 LABEL_W = 200
 
 
-class ChannelStrip:
+class ChannelStrip(QObject):
     """
     Owns two widgets:
       label_widget — shown in the fixed left panel
@@ -33,12 +33,15 @@ class ChannelStrip:
     Both are kept in sync from here.
     """
 
+    remove_requested = pyqtSignal()
+
     def __init__(
         self,
         live_state: ChannelState,
         settings_panel: ChannelSettingsPanel,
         channel_index: int,
     ) -> None:
+        super().__init__()
         self.live_state = live_state
         self._settings_panel = settings_panel
         self._channel_index = channel_index
@@ -53,31 +56,50 @@ class ChannelStrip:
 
     def _build_label_widget(self) -> QWidget:
         w = QWidget()
-        w.setFixedWidth(LABEL_W)
+        w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        w.setMinimumWidth(26)   # icon-only collapsed width
         w.setFixedHeight(46)
         w.setStyleSheet(f"background-color: {theme.BG_STRIP};")
 
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(6, 2, 6, 2)
-        lay.setSpacing(4)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(3)
 
-        # Waveform icon
+        # Waveform icon — always shows channel type regardless of name
         icon = QLabel(WAVEFORM_ICONS.get(self.live_state.waveform_type, "?"))
         icon.setStyleSheet(f"color: {theme.CYAN}; font-size: 16px;")
         icon.setFixedWidth(20)
 
-        # Name
-        name_lbl = QLabel(self.live_state.name)
-        name_lbl.setStyleSheet(f"color: {theme.FG}; font-size: 12px;")
-        name_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Name — inline editable QLineEdit
+        self._name_edit = QLineEdit(self.live_state.name)
+        self._name_edit.setToolTip("Click to rename channel")
+        self._name_edit.setStyleSheet(
+            f"QLineEdit {{"
+            f"  background: transparent; border: none;"
+            f"  color: {theme.FG}; font-size: 12px; padding: 0 2px;"
+            f"}}"
+            f"QLineEdit:focus {{"
+            f"  background: {theme.BG_INPUT}; border-bottom: 1px solid {theme.GREEN};"
+            f"}}"
+        )
+        self._name_edit.textChanged.connect(lambda t: setattr(self.live_state, "name", t))
+
+        # Volume slider
+        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vol_slider.setRange(0, 100)
+        self._vol_slider.setValue(int(self.live_state.volume * 100))
+        self._vol_slider.setFixedWidth(40)
+        self._vol_slider.setToolTip("Volume")
+        self._vol_slider.valueChanged.connect(
+            lambda v: setattr(self.live_state, "volume", v / 100.0)
+        )
 
         # Gear button
         gear_btn = QPushButton("⚙")
-        gear_btn.setFixedSize(22, 22)
+        gear_btn.setFixedSize(20, 20)
         gear_btn.setToolTip("Channel settings")
         gear_btn.setStyleSheet(
-            f"background: transparent; color: {theme.FG_DIM}; border: none; font-size: 14px;"
-            f" padding: 0;"
+            f"background: transparent; color: {theme.FG_DIM}; border: none; font-size: 14px; padding: 0;"
         )
         gear_btn.clicked.connect(self._open_settings)
 
@@ -86,28 +108,30 @@ class ChannelStrip:
         self._mute_btn.setObjectName("MuteBtn")
         self._mute_btn.setCheckable(True)
         self._mute_btn.setChecked(self.live_state.muted)
-        self._mute_btn.setFixedSize(22, 22)
+        self._mute_btn.setFixedSize(20, 20)
         self._mute_btn.setToolTip("Mute channel")
         self._mute_btn.toggled.connect(self._on_mute_toggled)
 
-        # Volume slider (vertical, compact)
-        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._vol_slider.setRange(0, 100)
-        self._vol_slider.setValue(int(self.live_state.volume * 100))
-        self._vol_slider.setFixedWidth(50)
-        self._vol_slider.setToolTip("Volume")
-        self._vol_slider.valueChanged.connect(
-            lambda v: setattr(self.live_state, "volume", v / 100.0)
+        # Remove button
+        remove_btn = QPushButton("×")
+        remove_btn.setFixedSize(16, 16)
+        remove_btn.setToolTip("Remove channel")
+        remove_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {theme.FG_DIM}; border: none; font-size: 14px; padding: 0; }}"
+            f"QPushButton:hover {{ color: {theme.RED}; }}"
         )
+        remove_btn.clicked.connect(self.remove_requested)
 
         lay.addWidget(icon)
-        lay.addWidget(name_lbl, 1)
+        lay.addWidget(self._name_edit, 1)
         lay.addWidget(self._vol_slider)
         lay.addWidget(gear_btn)
         lay.addWidget(self._mute_btn)
+        lay.addWidget(remove_btn)
 
-        # Store gear button ref for anchor positioning
-        self._gear_btn = gear_btn
+        # Store refs for collapse/expand
+        self._gear_btn   = gear_btn
+        self._remove_btn = remove_btn
         return w
 
     # ── Slots ─────────────────────────────────────────────────────────────────
@@ -135,6 +159,18 @@ class ChannelStrip:
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def collapse(self) -> None:
+        """Hide everything except the waveform icon."""
+        for w in (self._name_edit, self._vol_slider,
+                  self._gear_btn, self._mute_btn, self._remove_btn):
+            w.hide()
+
+    def expand(self) -> None:
+        """Restore all label widgets."""
+        for w in (self._name_edit, self._vol_slider,
+                  self._gear_btn, self._mute_btn, self._remove_btn):
+            w.show()
 
     def set_playhead(self, idx: int) -> None:
         self.grid_widget.set_playhead(idx)
