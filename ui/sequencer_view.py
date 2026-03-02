@@ -1,0 +1,383 @@
+"""
+SequencerView — 3-column layout:
+  Left (200px fixed)  : channel label widgets
+  Center (scroll area): TimelineRuler + step grids
+  Right (56px fixed)  : step count buttons (+16/+8/+4, -4/-1)
+
+2D drag-select is handled here via event filters on all StepGrid widgets.
+"""
+
+from __future__ import annotations
+
+from PyQt6.QtCore import Qt, QObject, QEvent, QPoint, QRect, pyqtSignal
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
+    QPushButton, QLabel, QFrame,
+)
+
+from models.schemas import ChannelState, StepState
+from ui.channel_strip import ChannelStrip, LABEL_W
+from ui.timeline_ruler import TimelineRuler
+from ui.channel_settings import ChannelSettingsPanel
+from ui.step_grid import StepGrid, _step_x, STEP_W
+from ui import theme
+
+RULER_SPACER_H = 36
+RIGHT_W = 56
+
+
+class _SelectionFilter(QObject):
+    """Event filter installed on all StepGrid widgets for 2D drag-select."""
+
+    def __init__(self, view: "SequencerView"):
+        super().__init__()
+        self._view = view
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if isinstance(obj, StepGrid):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self._view._sel_start(obj, event)
+                return True   # consume — StepGrid must not toggle until we know it's a click
+            elif event.type() == QEvent.Type.MouseMove:
+                self._view._sel_move(obj, event)
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._view._sel_end(obj, event)
+        return False
+
+
+class SequencerView(QWidget):
+    def __init__(self, channel_states: list[ChannelState], parent=None):
+        super().__init__(parent)
+        self._channel_states = channel_states
+        self._strips: list[ChannelStrip] = []
+        self._total_steps: int = len(channel_states[0].steps) if channel_states else 16
+
+        self._settings_panel = ChannelSettingsPanel()
+
+        # Selection state
+        self._sel_origin_step: int | None = None
+        self._sel_origin_ch: int | None = None
+        self._sel_origin_grid: "StepGrid | None" = None
+        self._sel_current_step: int | None = None
+        self._sel_current_ch: int | None = None
+        self._sel_button_held: bool = False
+        self._sel_dragged: bool = False   # True only after mouse moves away from origin
+        self._sel_filter = _SelectionFilter(self)
+
+        # Context bar (floating)
+        self._ctx_bar = self._build_context_bar()
+        self._ctx_bar.hide()
+
+        self._build_ui()
+        self._build_strips()
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Left panel
+        self._left_panel = QWidget()
+        self._left_panel.setFixedWidth(LABEL_W)
+        self._left_panel.setStyleSheet(f"background: {theme.BG_PANEL};")
+        self._left_lay = QVBoxLayout(self._left_panel)
+        self._left_lay.setContentsMargins(0, 0, 0, 0)
+        self._left_lay.setSpacing(0)
+
+        # Ruler spacer on left
+        ruler_spacer = QWidget()
+        ruler_spacer.setFixedHeight(RULER_SPACER_H)
+        ruler_spacer.setStyleSheet(f"background: {theme.BG_PANEL};")
+        self._left_lay.addWidget(ruler_spacer)
+        self._left_lay.addStretch(1)
+
+        # Scroll area (center)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._scroll_content = QWidget()
+        self._scroll_lay = QVBoxLayout(self._scroll_content)
+        self._scroll_lay.setContentsMargins(4, 0, 4, 0)
+        self._scroll_lay.setSpacing(0)
+
+        # Timeline ruler
+        self._ruler = TimelineRuler(self._total_steps)
+        self._ruler.loop_changed.connect(self._on_loop_changed)
+        self._scroll_lay.addWidget(self._ruler)
+
+        # Grid area placeholder — strips added in _build_strips
+        self._grid_container = QWidget()
+        self._grid_lay = QVBoxLayout(self._grid_container)
+        self._grid_lay.setContentsMargins(0, 0, 0, 0)
+        self._grid_lay.setSpacing(0)
+        self._scroll_lay.addWidget(self._grid_container)
+        self._scroll_lay.addStretch(1)
+
+        self._scroll.setWidget(self._scroll_content)
+
+        # Right panel — step count buttons
+        right = QWidget()
+        right.setFixedWidth(RIGHT_W)
+        right.setStyleSheet(f"background: {theme.BG_PANEL};")
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(4, 4, 4, 4)
+        right_lay.setSpacing(4)
+        for label, delta in [("+16", 16), ("+8", 8), ("+4", 4), ("-4", -4), ("-1", -1)]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(24)
+            btn.clicked.connect(lambda _, d=delta: self._change_steps(d))
+            right_lay.addWidget(btn)
+        right_lay.addStretch(1)
+
+        root.addWidget(self._left_panel)
+        root.addWidget(self._scroll, 1)
+        root.addWidget(right)
+
+    def _build_strips(self) -> None:
+        # Clear existing
+        for strip in self._strips:
+            strip.label_widget.setParent(None)
+            strip.grid_widget.setParent(None)
+        self._strips.clear()
+        while self._left_lay.count() > 2:  # keep spacer + stretch
+            item = self._left_lay.takeAt(1)
+            if item.widget():
+                item.widget().deleteLater()
+        while self._grid_lay.count():
+            item = self._grid_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for i, state in enumerate(self._channel_states):
+            strip = ChannelStrip(state, self._settings_panel, i)
+
+            # Install selection event filter
+            strip.grid_widget.installEventFilter(self._sel_filter)
+            strip.grid_widget.setProperty("channel_index", i)
+
+            # Add label to left panel (insert before stretch at end)
+            self._left_lay.insertWidget(self._left_lay.count() - 1, strip.label_widget)
+            # Add grid row
+            self._grid_lay.addWidget(self._grid_widget_row(strip, i))
+
+            self._strips.append(strip)
+
+    def _grid_widget_row(self, strip: ChannelStrip, idx: int) -> QWidget:
+        row = QWidget()
+        row.setFixedHeight(46)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(0)
+        lay.addWidget(strip.grid_widget)
+        lay.addStretch(1)
+        return row
+
+    # ── Context bar ───────────────────────────────────────────────────────────
+
+    def _build_context_bar(self) -> QWidget:
+        bar = QWidget(self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        bar.setStyleSheet(
+            f"background: {theme.BG_PANEL}; border: 1px solid {theme.BORDER}; border-radius: 4px;"
+        )
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setSpacing(6)
+
+        lock_btn   = QPushButton("Lock")
+        unlock_btn = QPushButton("Unlock")
+        clear_btn  = QPushButton("Clear")
+
+        lock_btn.clicked.connect(self._lock_selection)
+        unlock_btn.clicked.connect(self._unlock_selection)
+        clear_btn.clicked.connect(self._clear_selection)
+
+        lay.addWidget(lock_btn)
+        lay.addWidget(unlock_btn)
+        lay.addWidget(clear_btn)
+        return bar
+
+    # ── Step count controls ───────────────────────────────────────────────────
+
+    def _change_steps(self, delta: int) -> None:
+        new_count = max(4, min(64, self._total_steps + delta))
+        if new_count == self._total_steps:
+            return
+        self._total_steps = new_count
+        for strip in self._strips:
+            strip.resize_steps(new_count)
+        self._ruler.set_total_steps(new_count)
+
+    # ── Loop region ───────────────────────────────────────────────────────────
+
+    def _on_loop_changed(self, start: int, end: int) -> None:
+        # Propagated to MainWindow via parent access
+        pass
+
+    def get_loop_region(self) -> tuple[int, int]:
+        return self._ruler._loop_start, self._ruler._loop_end
+
+    def set_loop_region(self, start: int, end: int) -> None:
+        self._ruler.set_loop_region(start, end)
+
+    # ── Playhead ──────────────────────────────────────────────────────────────
+
+    def set_playhead(self, idx: int) -> None:
+        self._ruler.set_playhead(idx)
+        for strip in self._strips:
+            strip.set_playhead(idx)
+        # Auto-scroll to keep playhead visible
+        x = _step_x(idx)
+        self._scroll.ensureVisible(x + STEP_W // 2, 0, STEP_W, 0)
+
+    # ── 2D Drag Selection ─────────────────────────────────────────────────────
+
+    def _grid_index(self, grid: StepGrid) -> int:
+        return grid.property("channel_index") or 0
+
+    def _step_at_x(self, x: int) -> int | None:
+        for i in range(self._total_steps):
+            sx = _step_x(i)
+            if sx <= x < sx + STEP_W:
+                return i
+        return None
+
+    def _channel_at_global(self, gpos: QPoint) -> int | None:
+        """Return channel index whose grid widget contains global point gpos."""
+        for i, strip in enumerate(self._strips):
+            g = strip.grid_widget
+            tl = g.mapToGlobal(QPoint(0, 0))
+            if tl.y() <= gpos.y() <= tl.y() + g.height():
+                return i
+        return None
+
+    def _step_at_global(self, gpos: QPoint) -> int | None:
+        """Return step index under gpos by converting to first grid's local x."""
+        if not self._strips:
+            return None
+        g = self._strips[0].grid_widget
+        local_x = g.mapFromGlobal(gpos).x()
+        return self._step_at_x(local_x)
+
+    def _sel_start(self, grid: StepGrid, ev) -> None:
+        idx = self._step_at_x(int(ev.position().x()))
+        if idx is None:
+            return
+        self._sel_button_held  = True
+        self._sel_dragged      = False
+        self._sel_origin_step  = idx
+        self._sel_origin_ch    = self._grid_index(grid)
+        self._sel_origin_grid  = grid
+        self._sel_current_step = idx
+        self._sel_current_ch   = self._grid_index(grid)
+        # No visual selection yet — wait until the mouse actually moves
+
+    def _sel_move(self, grid: StepGrid, ev) -> None:
+        if not self._sel_button_held or self._sel_origin_step is None:
+            return
+        gpos = ev.globalPosition().toPoint()
+        ch  = self._channel_at_global(gpos)
+        idx = self._step_at_global(gpos)
+        if idx is None:
+            return
+        if ch is not None:
+            self._sel_current_ch = ch
+        self._sel_current_step = idx
+        # Only mark as a real drag once the cursor leaves the origin cell
+        if self._sel_current_step != self._sel_origin_step or self._sel_current_ch != self._sel_origin_ch:
+            self._sel_dragged = True
+        if self._sel_dragged:
+            self._update_selection()
+
+    def _sel_end(self, grid: StepGrid, ev) -> None:
+        self._sel_button_held = False
+        if not self._sel_dragged:
+            # Plain click — manually perform the toggle we blocked in the press event
+            g   = self._sel_origin_grid
+            idx = self._sel_origin_step
+            if g is not None and idx is not None and not g._is_locked(idx):
+                g._steps[idx].active = not g._steps[idx].active
+                g.step_toggled.emit(idx, g._steps[idx].active)
+                g.update()
+            self._clear_sel_state()
+            return
+        # Show context bar if more than one cell selected
+        sel = self._compute_selection()
+        total = sum(len(s) for s in sel.values())
+        if total > 1:
+            gpos = ev.globalPosition().toPoint()
+            self._ctx_bar.move(gpos.x() + 10, gpos.y() + 10)
+            self._ctx_bar.show()
+        else:
+            self._clear_sel_state()
+
+    def _compute_selection(self) -> dict[int, set[int]]:
+        if self._sel_origin_step is None:
+            return {}
+        step_min = min(self._sel_origin_step, self._sel_current_step)
+        step_max = max(self._sel_origin_step, self._sel_current_step)
+        ch_min   = min(self._sel_origin_ch,   self._sel_current_ch)
+        ch_max   = max(self._sel_origin_ch,   self._sel_current_ch)
+        result: dict[int, set[int]] = {}
+        for ch in range(ch_min, ch_max + 1):
+            result[ch] = set(range(step_min, step_max + 1))
+        return result
+
+    def _update_selection(self) -> None:
+        sel = self._compute_selection()
+        for i, strip in enumerate(self._strips):
+            strip.grid_widget.set_selected(sel.get(i, set()))
+
+    def _lock_selection(self) -> None:
+        sel = self._compute_selection()
+        for ch_idx, steps in sel.items():
+            if steps:
+                self._strips[ch_idx].add_locked_range(min(steps), max(steps))
+        self._clear_sel_state()
+
+    def _unlock_selection(self) -> None:
+        sel = self._compute_selection()
+        for ch_idx, steps in sel.items():
+            if steps:
+                self._strips[ch_idx].remove_locked_range(min(steps), max(steps))
+        self._clear_sel_state()
+
+    def _clear_selection(self) -> None:
+        sel = self._compute_selection()
+        for ch_idx, steps in sel.items():
+            for s in steps:
+                if s < len(self._strips[ch_idx].live_state.steps):
+                    self._strips[ch_idx].live_state.steps[s].active = False
+        self._clear_sel_state()
+        for strip in self._strips:
+            strip.grid_widget.update()
+
+    def _clear_sel_state(self) -> None:
+        self._sel_origin_step = None
+        self._sel_origin_ch   = None
+        self._sel_origin_grid = None
+        self._sel_current_step = None
+        self._sel_current_ch   = None
+        self._sel_dragged = False
+        for strip in self._strips:
+            strip.grid_widget.set_selected(set())
+        self._ctx_bar.hide()
+
+    # ── Data access ───────────────────────────────────────────────────────────
+
+    def get_channel_states(self) -> list[ChannelState]:
+        return [s.live_state for s in self._strips]
+
+    def serialize(self) -> list[dict]:
+        return [s.serialize() for s in self._strips]
+
+    def load_project(self, channel_states: list[ChannelState], total_steps: int,
+                     loop_start: int, loop_end: int) -> None:
+        self._channel_states = channel_states
+        self._total_steps = total_steps
+        self._build_strips()
+        self._ruler.set_total_steps(total_steps)
+        self._ruler.set_loop_region(loop_start, loop_end)
