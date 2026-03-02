@@ -1,4 +1,32 @@
 import { StepGrid } from './StepGrid.js';
+import { channelSettingsPanel } from './ChannelSettingsPanel.js';
+
+/**
+ * Merge saved synth params with waveform-appropriate defaults.
+ * Noise gets filterType:'highpass' as its default; oscillators get 'none'.
+ * @param {string} waveformType
+ * @param {object} saved  Partial params from the backend (may be empty)
+ * @returns {object}  Complete params object with all 14 keys
+ */
+export function resolveDefaultParams(waveformType, saved = {}) {
+  return {
+    attack:       0.002,
+    decay:        0.08,
+    sustain:      0.8,
+    release:      0.05,
+    dutyCycle:    0.5,
+    detune:       0,
+    transpose:    0,
+    vibratoRate:  0,
+    vibratoDepth: 0,
+    sweepAmount:  0,
+    sweepTime:    0.1,
+    filterType:   waveformType === 'noise' ? 'highpass' : 'none',
+    filterFreq:   2000,
+    filterQ:      1,
+    ...saved,
+  };
+}
 
 /**
  * ChannelStrip — one row in the sequencer for a single instrument channel.
@@ -85,6 +113,7 @@ export class ChannelStrip {
       muted:         channelData.muted,
       steps:         channelData.steps,
       lockedRanges:  this.#lockedRanges,
+      synthParams:   resolveDefaultParams(channelData.waveform_type, channelData.synth_params ?? {}),
     };
 
     this.#renderLabel(labelContainer);
@@ -107,6 +136,7 @@ export class ChannelStrip {
       <div class="ch-label">
         <span class="ch-wave-badge" title="${d.waveform_type}">${this.#waveformIcon(d.waveform_type)}</span>
         <span class="ch-name">${d.name}</span>
+        <button class="ch-settings-btn" title="Synth Settings">⚙</button>
       </div>
       <div class="ch-controls">
         <button class="ch-mute-btn${d.muted ? ' muted' : ''}" title="Mute">M</button>
@@ -115,6 +145,11 @@ export class ChannelStrip {
     `;
     this.labelElement = el;
     container.appendChild(el);
+
+    el.querySelector('.ch-settings-btn').addEventListener('click', (e) => {
+      channelSettingsPanel.open(d.name, d.waveform_type, this.#liveState.synthParams, e.currentTarget);
+      e.stopPropagation();
+    });
 
     el.querySelector('.ch-mute-btn').addEventListener('click', () => {
       d.muted = !d.muted;
@@ -199,6 +234,7 @@ export class ChannelStrip {
       pan:           this.#data.pan ?? 0,
       muted:         this.#data.muted,
       locked_ranges: this.#lockedRanges.map(r => ({ start: r.start, end: r.end })),
+      synth_params:  { ...this.#liveState.synthParams },
       steps: this.#data.steps.map((s, i) => ({
         step_index: i,
         active:     s.active,

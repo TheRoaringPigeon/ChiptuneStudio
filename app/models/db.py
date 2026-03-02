@@ -52,6 +52,7 @@ class Channel(Base):
     pan: Mapped[float] = mapped_column(Float, default=0.0)
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
     locked_ranges: Mapped[list] = mapped_column(JSON, default=list)
+    synth_params: Mapped[dict] = mapped_column(JSON, default=dict)
 
     pattern: Mapped["Pattern"] = relationship("Pattern", back_populates="channels")
     steps: Mapped[list["Step"]] = relationship(

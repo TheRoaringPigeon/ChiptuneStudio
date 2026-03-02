@@ -30,8 +30,9 @@ export class SynthBase {
    * @param {number}  velocity      - Note velocity (0–127)
    * @param {number}  volume        - Channel volume (0.0–1.0)
    * @param {number}  pan           - Stereo pan (-1.0 left … 1.0 right)
+   * @param {object}  synthParams   - Per-channel synthesis parameters (ADSR, filter, etc.)
    */
-  playNote(waveformType, midiPitch, startTime, duration, velocity, volume, pan) {
+  playNote(waveformType, midiPitch, startTime, duration, velocity, volume, pan, synthParams = {}) {
     throw new Error(`${this.constructor.name}.playNote() not implemented`);
   }
 

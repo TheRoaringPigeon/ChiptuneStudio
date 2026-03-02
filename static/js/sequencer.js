@@ -109,14 +109,18 @@ export class Sequencer {
         const stepData = ch.steps[step];
         if (!stepData?.active) continue;
 
+        // Apply transpose from synth params to the raw step pitch
+        const pitch = stepData.pitch + (ch.synthParams?.transpose ?? 0);
+
         this.#synth.playNote(
           ch.waveformType,
-          stepData.pitch,
+          pitch,
           t,
           stepDuration * 0.9, // slight gate (90% of step duration)
           stepData.velocity,
           ch.volume,
           ch.pan,
+          ch.synthParams,
         );
       }
 

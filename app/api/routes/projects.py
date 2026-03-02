@@ -47,6 +47,7 @@ def _build_default_pattern(plugin_id: str, steps_per_pattern: int) -> Pattern:
             pan=ch_def.pan,
             muted=False,
             locked_ranges=[],
+            synth_params={},
         )
         channel.steps = [
             Step(step_index=i, active=False, pitch=ch_def.default_pitch, velocity=100)
@@ -115,6 +116,7 @@ async def save_project(project_id: int, payload: ProjectSave, db: AsyncSession =
                 pan=ch_data.pan,
                 muted=ch_data.muted,
                 locked_ranges=[r.model_dump() for r in ch_data.locked_ranges],
+                synth_params=ch_data.synth_params,
             )
             channel.steps = [
                 Step(
