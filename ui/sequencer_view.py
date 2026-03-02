@@ -9,7 +9,7 @@ SequencerView — 3-column layout:
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QObject, QEvent, QPoint, QRect, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, QEvent, QPoint, QRect, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
     QPushButton, QLabel, QFrame,
@@ -64,6 +64,12 @@ class SequencerView(QWidget):
         self._sel_dragged: bool = False   # True only after mouse moves away from origin
         self._sel_filter = _SelectionFilter(self)
 
+        # Auto-scroll state
+        self._scroll_dx: int = 0
+        self._auto_scroll_timer = QTimer(self)
+        self._auto_scroll_timer.setInterval(16)   # ~60 fps
+        self._auto_scroll_timer.timeout.connect(self._do_auto_scroll)
+
         # Context bar (floating)
         self._ctx_bar = self._build_context_bar()
         self._ctx_bar.hide()
@@ -107,6 +113,7 @@ class SequencerView(QWidget):
         # Timeline ruler
         self._ruler = TimelineRuler(self._total_steps)
         self._ruler.loop_changed.connect(self._on_loop_changed)
+        self._ruler.installEventFilter(self)   # auto-scroll during loop-handle drag
         self._scroll_lay.addWidget(self._ruler)
 
         # Grid area placeholder — strips added in _build_strips
@@ -203,13 +210,27 @@ class SequencerView(QWidget):
     # ── Step count controls ───────────────────────────────────────────────────
 
     def _change_steps(self, delta: int) -> None:
-        new_count = max(4, min(64, self._total_steps + delta))
-        if new_count == self._total_steps:
+        old_count = self._total_steps
+        new_count = max(4, min(64, old_count + delta))
+        if new_count == old_count:
             return
+
+        # Pin state: was the loop end sitting on the very last step?
+        loop_end_was_max = (self._ruler._loop_end == old_count - 1)
+
         self._total_steps = new_count
         for strip in self._strips:
             strip.resize_steps(new_count)
+        # set_total_steps already clamps loop_end downward when removing steps
         self._ruler.set_total_steps(new_count)
+
+        # If the loop end was pinned to the far right, keep it pinned
+        if loop_end_was_max:
+            self._ruler._loop_end = new_count - 1
+            self._ruler.update()
+
+        # Notify scheduler (and anything else wired to loop_changed)
+        self._ruler.loop_changed.emit(self._ruler._loop_start, self._ruler._loop_end)
 
     # ── Loop region ───────────────────────────────────────────────────────────
 
@@ -232,6 +253,80 @@ class SequencerView(QWidget):
         # Auto-scroll to keep playhead visible
         x = _step_x(idx)
         self._scroll.ensureVisible(x + STEP_W // 2, 0, STEP_W, 0)
+
+    # ── Auto-scroll ───────────────────────────────────────────────────────────
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """Watch ruler mouse events so loop-handle drags also trigger auto-scroll."""
+        if obj is self._ruler:
+            if event.type() == QEvent.Type.MouseMove:
+                if self._ruler._drag_handle is not None:
+                    self._update_auto_scroll(event.globalPosition().toPoint())
+                else:
+                    self._stop_auto_scroll()
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._stop_auto_scroll()
+        return False   # never consume ruler events
+
+    def _update_auto_scroll(self, gpos: QPoint) -> None:
+        """Start/update or stop the auto-scroll timer based on cursor proximity to viewport edges."""
+        vp     = self._scroll.viewport()
+        vp_tl  = vp.mapToGlobal(QPoint(0, 0))
+        vp_left  = vp_tl.x()
+        vp_right = vp_left + vp.width()
+
+        ZONE      = 60    # px from edge that triggers scrolling
+        MAX_SPEED = 18    # px per timer tick at full speed
+
+        x = gpos.x()
+        if x < vp_left + ZONE:
+            dist = (vp_left + ZONE) - x
+            self._scroll_dx = -max(2, int(dist / ZONE * MAX_SPEED))
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+        elif x > vp_right - ZONE:
+            dist = x - (vp_right - ZONE)
+            self._scroll_dx = max(2, int(dist / ZONE * MAX_SPEED))
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+        else:
+            self._stop_auto_scroll()
+
+    def _stop_auto_scroll(self) -> None:
+        self._auto_scroll_timer.stop()
+        self._scroll_dx = 0
+
+    def _do_auto_scroll(self) -> None:
+        """Timer callback: advance the scrollbar, then refresh selection / ruler."""
+        from PyQt6.QtGui import QCursor
+        hsb = self._scroll.horizontalScrollBar()
+        hsb.setValue(hsb.value() + self._scroll_dx)
+
+        gpos = QCursor.pos()
+
+        # Update step-grid drag selection
+        if self._sel_button_held and self._sel_origin_step is not None:
+            ch  = self._channel_at_global(gpos)
+            idx = self._step_at_global_clamped(gpos)
+            if ch is not None:
+                self._sel_current_ch = ch
+            self._sel_current_step = idx
+            if (self._sel_current_step != self._sel_origin_step
+                    or self._sel_current_ch != self._sel_origin_ch):
+                self._sel_dragged = True
+            if self._sel_dragged:
+                self._update_selection()
+
+        # Update ruler loop-handle drag
+        if self._ruler._drag_handle is not None:
+            local_x = self._ruler.mapFromGlobal(gpos).x()
+            step = self._ruler._nearest_step(local_x)
+            if self._ruler._drag_handle == "start":
+                self._ruler._loop_start = min(step, self._ruler._loop_end)
+            else:
+                self._ruler._loop_end = max(step, self._ruler._loop_start)
+            self._ruler.loop_changed.emit(self._ruler._loop_start, self._ruler._loop_end)
+            self._ruler.update()
 
     # ── 2D Drag Selection ─────────────────────────────────────────────────────
 
@@ -262,6 +357,17 @@ class SequencerView(QWidget):
         local_x = g.mapFromGlobal(gpos).x()
         return self._step_at_x(local_x)
 
+    def _step_at_global_clamped(self, gpos: QPoint) -> int:
+        """Like _step_at_global but clamps to [0, total_steps-1] for auto-scroll."""
+        if not self._strips:
+            return 0
+        g = self._strips[0].grid_widget
+        local_x = g.mapFromGlobal(gpos).x()
+        idx = self._step_at_x(local_x)
+        if idx is not None:
+            return idx
+        return 0 if local_x < _step_x(0) else self._total_steps - 1
+
     def _sel_start(self, grid: StepGrid, ev) -> None:
         idx = self._step_at_x(int(ev.position().x()))
         if idx is None:
@@ -291,9 +397,11 @@ class SequencerView(QWidget):
             self._sel_dragged = True
         if self._sel_dragged:
             self._update_selection()
+        self._update_auto_scroll(gpos)
 
     def _sel_end(self, grid: StepGrid, ev) -> None:
         self._sel_button_held = False
+        self._stop_auto_scroll()
         if not self._sel_dragged:
             # Plain click — manually perform the toggle we blocked in the press event
             g   = self._sel_origin_grid
@@ -356,6 +464,7 @@ class SequencerView(QWidget):
             strip.grid_widget.update()
 
     def _clear_sel_state(self) -> None:
+        self._stop_auto_scroll()
         self._sel_origin_step = None
         self._sel_origin_ch   = None
         self._sel_origin_grid = None
