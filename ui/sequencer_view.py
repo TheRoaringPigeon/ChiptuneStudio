@@ -16,7 +16,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFrame, QMenu, QSplitter,
 )
 
-from models.schemas import ChannelState, StepState, DEFAULT_SYNTH_PARAMS, NOISE_SYNTH_PARAMS
+from models.schemas import (
+    ChannelState, StepState,
+    DEFAULT_SYNTH_PARAMS, NOISE_SYNTH_PARAMS,
+    FM_SYNTH_PARAMS, WAVETABLE_SYNTH_PARAMS,
+)
 from ui.channel_strip import ChannelStrip, LABEL_W
 from ui.timeline_ruler import TimelineRuler
 from ui.channel_settings import ChannelSettingsPanel
@@ -239,6 +243,9 @@ class SequencerView(QWidget):
             ("▬  Pulse (Square)",  "square"),
             ("▲  Triangle",        "triangle"),
             ("∿  Sawtooth",        "sawtooth"),
+            ("⌒  Sine",            "sine"),
+            ("≋  FM (2-op)",       "fm"),
+            ("⊡  Wavetable",       "wavetable"),
             ("⊞  Noise",           "noise"),
         ]
         for label, wtype in options:
@@ -249,13 +256,20 @@ class SequencerView(QWidget):
         menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
 
     def _add_channel(self, waveform_type: str) -> None:
-        is_noise = waveform_type == "noise"
-        params = dict(NOISE_SYNTH_PARAMS if is_noise else DEFAULT_SYNTH_PARAMS)
+        _param_map = {
+            "noise":     NOISE_SYNTH_PARAMS,
+            "fm":        FM_SYNTH_PARAMS,
+            "wavetable": WAVETABLE_SYNTH_PARAMS,
+        }
+        params = dict(_param_map.get(waveform_type, DEFAULT_SYNTH_PARAMS))
         default_names = {
-            "square":   "Pulse",
-            "triangle": "Triangle",
-            "sawtooth": "Sawtooth",
-            "noise":    "Noise",
+            "square":    "Pulse",
+            "triangle":  "Triangle",
+            "sawtooth":  "Sawtooth",
+            "sine":      "Sine",
+            "fm":        "FM",
+            "wavetable": "Wavetable",
+            "noise":     "Noise",
         }
         steps = [StepState() for _ in range(self._total_steps)]
         state = ChannelState(

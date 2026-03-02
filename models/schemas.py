@@ -25,6 +25,17 @@ NOISE_SYNTH_PARAMS: dict[str, Any] = {
     "filterType": "highpass",
 }
 
+FM_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "fmRatio": 2.0,
+    "fmIndex": 2.0,
+}
+
+WAVETABLE_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "wavetablePreset": 0,
+}
+
 
 @dataclass
 class StepState:

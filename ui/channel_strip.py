@@ -16,10 +16,13 @@ from ui.channel_settings import ChannelSettingsPanel
 from ui import theme
 
 WAVEFORM_ICONS = {
-    "square":   "▬",
-    "triangle": "▲",
-    "sawtooth": "∿",
-    "noise":    "⊞",
+    "square":    "▬",
+    "triangle":  "▲",
+    "sawtooth":  "∿",
+    "noise":     "⊞",
+    "sine":      "⌒",
+    "fm":        "≋",
+    "wavetable": "⊡",
 }
 
 LABEL_W = 200

@@ -17,22 +17,62 @@ def _midi_to_freq(note: int) -> float:
     return 440.0 * (2.0 ** ((note - 69) / 12.0))
 
 
+# ── Wavetable presets (Game Boy wave-channel style, 32 samples each) ─────────
+
+def _norm(w: np.ndarray) -> np.ndarray:
+    m = np.max(np.abs(w))
+    return (w / m).astype(np.float32) if m > 0 else w.astype(np.float32)
+
+
+_WT = np.linspace(0, 2 * np.pi, 32, endpoint=False)
+_WI = np.arange(32)
+
+WAVETABLE_PRESET_NAMES = [
+    "Sine", "Half-sine", "Sawtooth", "Square",
+    "Organ", "Resonant", "Clavinet", "Stepped",
+]
+
+WAVETABLE_PRESETS: list[np.ndarray] = [
+    # 0  Sine
+    np.sin(_WT).astype(np.float32),
+    # 1  Half-sine  (positive arch → silence, classic Game Boy)
+    _norm(np.where(_WI < 16, np.sin(np.linspace(0, np.pi, 32, endpoint=False)), 0.0)),
+    # 2  Sawtooth
+    np.linspace(1.0, -1.0, 32, endpoint=False).astype(np.float32),
+    # 3  Square 50 %
+    np.where(_WI < 16, 1.0, -1.0).astype(np.float32),
+    # 4  Organ  (fundamental + 2nd + 3rd harmonic)
+    _norm(0.50 * np.sin(_WT) + 0.33 * np.sin(2 * _WT) + 0.20 * np.sin(3 * _WT)),
+    # 5  Resonant  (odd harmonics, bright and nasal)
+    _norm(np.sin(_WT) + 0.50 * np.sin(3 * _WT) + 0.25 * np.sin(5 * _WT)),
+    # 6  Clavinet  (alternating harmonic phase, pluck-like)
+    _norm(np.sin(_WT) - 0.50 * np.sin(2 * _WT) + 0.25 * np.sin(4 * _WT) - 0.125 * np.sin(8 * _WT)),
+    # 7  Stepped   (4-bit quantised sine = Game Boy default character)
+    (np.round(np.sin(_WT) * 7) / 7).astype(np.float32),
+]
+
+
 def _resolve_params(waveform_type: str, raw: dict) -> dict:
     defaults = {
-        "attack":       0.002,
-        "decay":        0.08,
-        "sustain":      0.8,
-        "release":      0.05,
-        "dutyCycle":    0.5,
-        "detune":       0.0,
-        "transpose":    0,
-        "vibratoRate":  0.0,
-        "vibratoDepth": 0.0,
-        "sweepAmount":  0,
-        "sweepTime":    0.1,
-        "filterType":   "highpass" if waveform_type == "noise" else "none",
-        "filterFreq":   2000.0,
-        "filterQ":      1.0,
+        "attack":          0.002,
+        "decay":           0.08,
+        "sustain":         0.8,
+        "release":         0.05,
+        "dutyCycle":       0.5,
+        "detune":          0.0,
+        "transpose":       0,
+        "vibratoRate":     0.0,
+        "vibratoDepth":    0.0,
+        "sweepAmount":     0,
+        "sweepTime":       0.1,
+        "filterType":      "highpass" if waveform_type == "noise" else "none",
+        "filterFreq":      2000.0,
+        "filterQ":         1.0,
+        # FM (2-op)
+        "fmRatio":         1.0,
+        "fmIndex":         1.0,
+        # Wavetable
+        "wavetablePreset": 0,
     }
     return {**defaults, **raw}
 
@@ -113,6 +153,43 @@ def _noise(n: int) -> np.ndarray:
     return np.random.uniform(-1.0, 1.0, n).astype(np.float32)
 
 
+def _sine(n: int, sr: int, base_freq: float, p: dict) -> np.ndarray:
+    """Pure sinusoidal tone — smooth, no harmonics."""
+    phase = _accumulate_phase(n, sr, base_freq, p)
+    return np.sin(2.0 * np.pi * phase).astype(np.float32)
+
+
+def _fm(n: int, sr: int, base_freq: float, p: dict) -> np.ndarray:
+    """2-operator FM synthesis (Sega Genesis / YM2612 style).
+
+    carrier  = sin(2π * fc * t + fmIndex * sin(2π * fm * t))
+    fm       = fc * fmRatio
+    """
+    fm_ratio = float(p["fmRatio"])
+    fm_index = float(p["fmIndex"])
+
+    # Carrier phase with vibrato / sweep applied to the carrier frequency
+    carrier_phase = _accumulate_phase(n, sr, base_freq, p)
+
+    # Modulator: simple fixed-frequency sine (no vibrato / sweep on modulator)
+    dt = 1.0 / sr
+    mod_phase = np.cumsum(np.full(n, base_freq * fm_ratio * dt, dtype=np.float64))
+
+    wave = np.sin(2.0 * np.pi * (carrier_phase + fm_index * np.sin(2.0 * np.pi * mod_phase)))
+    return wave.astype(np.float32)
+
+
+def _wavetable(n: int, sr: int, base_freq: float, p: dict) -> np.ndarray:
+    """Game Boy wave-channel style: cycle through a 32-sample preset table."""
+    preset_idx = int(np.clip(p["wavetablePreset"], 0, len(WAVETABLE_PRESETS) - 1))
+    table = WAVETABLE_PRESETS[preset_idx]
+    table_len = len(table)
+
+    phase = _accumulate_phase(n, sr, base_freq, p)
+    indices = (phase % 1.0 * table_len).astype(np.int32) % table_len
+    return table[indices]
+
+
 def _apply_filter(wave: np.ndarray, p: dict) -> np.ndarray:
     ftype = str(p["filterType"])
     if ftype == "none":
@@ -125,7 +202,17 @@ def _apply_filter(wave: np.ndarray, p: dict) -> np.ndarray:
     btype_map = {"lowpass": "low", "highpass": "high", "bandpass": "band"}
     btype = btype_map.get(ftype, "low")
 
-    sos = butter(2, freq / nyq, btype=btype, output="sos")
+    if btype == "band":
+        # Bandpass requires [low, high] normalised frequencies.
+        # Derive band edges from centre frequency and Q: BW = fc / Q.
+        bw   = freq / max(float(q), 0.1)
+        low  = np.clip(freq - bw / 2.0, 20.0, nyq - 2.0)
+        high = np.clip(freq + bw / 2.0, low + 1.0, nyq - 1.0)
+        Wn   = [low / nyq, high / nyq]
+    else:
+        Wn = freq / nyq
+
+    sos = butter(2, Wn, btype=btype, output="sos")
     return sosfilt(sos, wave).astype(np.float32)
 
 
@@ -160,10 +247,16 @@ def render_note(
     # Generate waveform
     if waveform_type == "noise":
         wave = _noise(n)
+    elif waveform_type == "sine":
+        wave = _sine(n, SAMPLE_RATE, base_freq, p)
     elif waveform_type == "triangle":
         wave = _triangle(n, SAMPLE_RATE, base_freq, p)
     elif waveform_type == "sawtooth":
         wave = _sawtooth(n, SAMPLE_RATE, base_freq, p)
+    elif waveform_type == "fm":
+        wave = _fm(n, SAMPLE_RATE, base_freq, p)
+    elif waveform_type == "wavetable":
+        wave = _wavetable(n, SAMPLE_RATE, base_freq, p)
     else:
         wave = _square(n, SAMPLE_RATE, base_freq, p)
 

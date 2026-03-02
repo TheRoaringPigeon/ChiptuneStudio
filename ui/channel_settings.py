@@ -114,8 +114,12 @@ class ChannelSettingsPanel(QWidget):
                 item.widget().deleteLater()
 
     def _build(self, name: str, waveform_type: str, params: dict) -> None:
-        is_osc    = waveform_type != "noise"
-        is_square = waveform_type == "square"
+        is_osc       = waveform_type not in ("noise",)
+        is_square    = waveform_type == "square"
+        is_fm        = waveform_type == "fm"
+        is_wavetable = waveform_type == "wavetable"
+        # Vibrato / sweep make sense for continuous-phase oscillators only
+        has_mod = waveform_type not in ("noise", "wavetable")
 
         # Header
         hdr = QWidget()
@@ -148,25 +152,44 @@ class ChannelSettingsPanel(QWidget):
         self._slider("FREQ", 20, 20000, 1,   params.get("filterFreq", 2000), lambda v: f"{int(v)}Hz", lambda v: params.update({"filterFreq": v}))
         self._slider("Q",    0.1, 20,   0.1, params.get("filterQ",    1.0),  lambda v: f"{v:.1f}",    lambda v: params.update({"filterQ":    v}))
 
+        # FM — 2-operator controls (fm only)
+        if is_fm:
+            self._section("FM")
+            self._slider("RATIO", 0.5, 8.0, 0.5, params.get("fmRatio", 1.0),
+                         lambda v: f"{v:.1f}x", lambda v: params.update({"fmRatio": v}))
+            self._slider("INDEX", 0.0, 10.0, 0.1, params.get("fmIndex", 1.0),
+                         lambda v: f"{v:.1f}",  lambda v: params.update({"fmIndex": v}))
+
+        # WAVETABLE preset selector (wavetable only)
+        if is_wavetable:
+            from audio.synth import WAVETABLE_PRESET_NAMES
+            self._section("WAVETABLE")
+            self._slider(
+                "PRESET", 0, len(WAVETABLE_PRESET_NAMES) - 1, 1,
+                params.get("wavetablePreset", 0),
+                lambda v: WAVETABLE_PRESET_NAMES[int(round(v))],
+                lambda v: params.update({"wavetablePreset": int(round(v))}),
+            )
+
         # TONE (square only)
         if is_square:
             self._section("TONE")
             self._slider("DUTY", 0.1, 0.9, 0.01, params.get("dutyCycle", 0.5), lambda v: f"{int(v*100)}%", lambda v: params.update({"dutyCycle": v}))
 
-        # PITCH (oscillators)
-        if is_osc:
+        # PITCH — detune / transpose (all oscillators and wavetable)
+        if is_osc or is_wavetable:
             self._section("PITCH")
             self._slider("DETUNE", -100, 100, 1, params.get("detune",    0), lambda v: f"{'+' if v>=0 else ''}{int(v)}¢",  lambda v: params.update({"detune":    v}))
             self._slider("XPOSE",  -24,  24,  1, params.get("transpose", 0), lambda v: f"{'+' if v>=0 else ''}{int(v)}st", lambda v: params.update({"transpose": v}))
 
-        # VIBRATO (oscillators)
-        if is_osc:
+        # VIBRATO (continuous-phase oscillators only)
+        if has_mod:
             self._section("VIBRATO")
             self._slider("RATE",  0, 20,  0.1, params.get("vibratoRate",  0), lambda v: f"{v:.1f}Hz", lambda v: params.update({"vibratoRate":  v}))
             self._slider("DEPTH", 0, 200, 1,   params.get("vibratoDepth", 0), lambda v: f"{int(v)}¢",  lambda v: params.update({"vibratoDepth": v}))
 
-        # SWEEP (oscillators)
-        if is_osc:
+        # SWEEP (continuous-phase oscillators only)
+        if has_mod:
             self._section("SWEEP")
             self._slider("AMT",  -24, 24,  1,     params.get("sweepAmount", 0),   lambda v: f"{'+' if v>=0 else ''}{int(v)}st", lambda v: params.update({"sweepAmount": v}))
             self._slider("TIME",  0,  0.5, 0.001, params.get("sweepTime",   0.1), lambda v: f"{int(v*1000)}ms",                  lambda v: params.update({"sweepTime":   v}))
