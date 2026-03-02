@@ -44,7 +44,8 @@ class ChannelStrip:
         self._channel_index = channel_index
 
         self.label_widget = self._build_label_widget()
-        self.grid_widget  = StepGrid(live_state.steps, channel_index)
+        pitched = live_state.waveform_type != "noise"
+        self.grid_widget  = StepGrid(live_state.steps, channel_index, pitched=pitched)
 
         self.grid_widget.step_toggled.connect(self._on_step_toggled)
 

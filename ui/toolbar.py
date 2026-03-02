@@ -36,80 +36,83 @@ class ToolbarWidget(QWidget):
     def _build(self) -> None:
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
 
-        # App title
+        # App title — fixed, always visible
         title = QLabel("CHIPTUNE STUDIO")
         title.setObjectName("AppTitle")
+        title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         lay.addWidget(title)
 
         self._separator(lay)
 
-        # Project name editor
+        # Project name — expands to fill spare space (stretch 2)
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("Project name...")
-        self._name_edit.setFixedWidth(150)
-        lay.addWidget(self._name_edit)
+        self._name_edit.setMinimumWidth(70)
+        lay.addWidget(self._name_edit, 2)
 
-        # Project list
+        # Project list — expands a little (stretch 1)
         self._proj_combo = QComboBox()
-        self._proj_combo.setMinimumWidth(120)
+        self._proj_combo.setMinimumWidth(70)
         self._proj_combo.currentIndexChanged.connect(self._on_combo_changed)
-        lay.addWidget(self._proj_combo)
+        lay.addWidget(self._proj_combo, 1)
 
-        # NEW / SAVE / DEL
+        # NEW / SAVE / DEL — natural size from text, never clipped
         new_btn = QPushButton("NEW")
-        new_btn.setFixedWidth(44)
+        new_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         new_btn.clicked.connect(self.project_new)
         lay.addWidget(new_btn)
 
         save_btn = QPushButton("SAVE")
-        save_btn.setFixedWidth(44)
+        save_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         save_btn.clicked.connect(self._on_save)
         lay.addWidget(save_btn)
 
         del_btn = QPushButton("DEL")
-        del_btn.setFixedWidth(44)
+        del_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         del_btn.setStyleSheet(f"color: {theme.RED}; border-color: {theme.RED};")
         del_btn.clicked.connect(self._on_delete)
         lay.addWidget(del_btn)
 
         self._separator(lay)
 
-        # Play / Stop
+        # Play / Stop — natural size
         self._play_btn = QPushButton("▶ PLAY")
         self._play_btn.setObjectName("PlayBtn")
         self._play_btn.setCheckable(True)
-        self._play_btn.setFixedWidth(72)
+        self._play_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self._play_btn.clicked.connect(self._on_play)
         lay.addWidget(self._play_btn)
 
         stop_btn = QPushButton("■ STOP")
         stop_btn.setObjectName("StopBtn")
-        stop_btn.setFixedWidth(72)
+        stop_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         stop_btn.clicked.connect(self._on_stop)
         lay.addWidget(stop_btn)
 
         self._separator(lay)
 
-        # BPM
+        # BPM label — fixed
         bpm_lbl = QLabel("BPM")
         bpm_lbl.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 11px;")
+        bpm_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         lay.addWidget(bpm_lbl)
 
+        # BPM slider — expands most aggressively (stretch 3)
         self._bpm_slider = QSlider(Qt.Orientation.Horizontal)
         self._bpm_slider.setRange(40, 300)
         self._bpm_slider.setValue(120)
-        self._bpm_slider.setFixedWidth(120)
+        self._bpm_slider.setMinimumWidth(60)
         self._bpm_slider.valueChanged.connect(self._on_bpm_changed)
-        lay.addWidget(self._bpm_slider)
+        lay.addWidget(self._bpm_slider, 3)
 
+        # BPM readout — fixed, always 3-digit wide
         self._bpm_display = QLabel("120")
-        self._bpm_display.setFixedWidth(32)
+        self._bpm_display.setFixedWidth(34)
+        self._bpm_display.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._bpm_display.setStyleSheet(f"color: {theme.GREEN};")
         lay.addWidget(self._bpm_display)
-
-        lay.addStretch(1)
 
     def _separator(self, lay: QHBoxLayout) -> None:
         from PyQt6.QtWidgets import QFrame
