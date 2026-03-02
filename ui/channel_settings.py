@@ -142,6 +142,12 @@ class ChannelSettingsPanel(QWidget):
         self._slider("SUS",  0.0,   1.0,   0.01,  params.get("sustain",  0.8),   lambda v: f"{int(v*100)}%",    lambda v: params.update({"sustain":  v}))
         self._slider("REL",  0.001, 3.0,   0.001, params.get("release",  0.05),  lambda v: f"{int(v*1000)}ms",  lambda v: params.update({"release":  v}))
 
+        # FILTER — placed early so the type dropdown never falls below the panel bottom
+        self._section("FILTER")
+        self._filter_type_row(params)
+        self._slider("FREQ", 20, 20000, 1,   params.get("filterFreq", 2000), lambda v: f"{int(v)}Hz", lambda v: params.update({"filterFreq": v}))
+        self._slider("Q",    0.1, 20,   0.1, params.get("filterQ",    1.0),  lambda v: f"{v:.1f}",    lambda v: params.update({"filterQ":    v}))
+
         # TONE (square only)
         if is_square:
             self._section("TONE")
@@ -153,23 +159,17 @@ class ChannelSettingsPanel(QWidget):
             self._slider("DETUNE", -100, 100, 1, params.get("detune",    0), lambda v: f"{'+' if v>=0 else ''}{int(v)}¢",  lambda v: params.update({"detune":    v}))
             self._slider("XPOSE",  -24,  24,  1, params.get("transpose", 0), lambda v: f"{'+' if v>=0 else ''}{int(v)}st", lambda v: params.update({"transpose": v}))
 
-        # VIBRATO
+        # VIBRATO (oscillators)
         if is_osc:
             self._section("VIBRATO")
             self._slider("RATE",  0, 20,  0.1, params.get("vibratoRate",  0), lambda v: f"{v:.1f}Hz", lambda v: params.update({"vibratoRate":  v}))
             self._slider("DEPTH", 0, 200, 1,   params.get("vibratoDepth", 0), lambda v: f"{int(v)}¢",  lambda v: params.update({"vibratoDepth": v}))
 
-        # SWEEP
+        # SWEEP (oscillators)
         if is_osc:
             self._section("SWEEP")
             self._slider("AMT",  -24, 24,  1,     params.get("sweepAmount", 0),   lambda v: f"{'+' if v>=0 else ''}{int(v)}st", lambda v: params.update({"sweepAmount": v}))
             self._slider("TIME",  0,  0.5, 0.001, params.get("sweepTime",   0.1), lambda v: f"{int(v*1000)}ms",                  lambda v: params.update({"sweepTime":   v}))
-
-        # FILTER
-        self._section("FILTER")
-        self._filter_type_row(params)
-        self._slider("FREQ", 20, 20000, 1,   params.get("filterFreq", 2000), lambda v: f"{int(v)}Hz", lambda v: params.update({"filterFreq": v}))
-        self._slider("Q",    0.1, 20,   0.1, params.get("filterQ",    1.0),  lambda v: f"{v:.1f}",    lambda v: params.update({"filterQ":    v}))
 
     def _section(self, label: str) -> None:
         sep = _SectionLabel(label)

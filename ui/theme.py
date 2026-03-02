@@ -1,6 +1,6 @@
 """Dark retro theme for ChiptuneStudio."""
 
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtGui import QColor, QFont, QPalette
 from PyQt6.QtWidgets import QApplication
 
 # Colour constants (also used by paint code)
@@ -97,6 +97,7 @@ QComboBox::drop-down {{
 QComboBox QAbstractItemView {{
     background-color: {BG_INPUT};
     color: {FG};
+    font-size: 13px;
     selection-background-color: {BG_STRIP};
     border: 1px solid {BORDER};
 }}
@@ -186,6 +187,12 @@ QStatusBar {{
 
 
 def apply_theme(app: QApplication) -> None:
+    # Set the application font in point units first.
+    # Qt's QComboBox popup window calls font.pointSize() when it inherits the font;
+    # if the font was only ever set via a px-based stylesheet, pointSize() returns -1
+    # and triggers "QFont::setPointSize: Point size <= 0 (-1)".
+    # An explicit pt font on the app object gives every widget a valid pointSize().
+    app.setFont(QFont("Courier New", 10))
     app.setStyleSheet(QSS)
 
     palette = QPalette()
