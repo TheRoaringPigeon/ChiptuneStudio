@@ -95,9 +95,133 @@ class MainWindow(QMainWindow):
             return [{"id": r.id, "name": r.name} for r in rows]
 
     def _create_default_project(self) -> None:
+        """Create a new project pre-loaded with an ocean-waves pattern."""
+        BPM   = 65
+        STEPS = 32
+
+        # ── Step patterns: list of (active, velocity) per step ────────────────
+        #
+        # Two wave cycles across 32 steps (~7.4 s per loop at BPM 65).
+        # Velocity shapes the wave build / peak / recession envelope.
+
+        # Wave 1: build steps 0-7 → peak 8 → recede 9-13 → silence 14-15
+        # Wave 2: build steps 17-22 → peak 23-24 → recede 25-29 → silence 30-31
+        crash = [
+            (True,  30), (True,  45), (True,  60), (True,  75),  # 0-3  build
+            (True,  90), (True, 105), (True, 115), (True, 122),  # 4-7  build
+            (True, 127), (True, 118), (True, 100), (True,  80),  # 8-11 peak→recede
+            (True,  58), (True,  35), (False,  0), (False,  0),  # 12-15 recede→quiet
+            (False,  0), (True,  28), (True,  44), (True,  62),  # 16-19 quiet→build
+            (True,  80), (True,  98), (True, 112), (True, 122),  # 20-23 build
+            (True, 127), (True, 114), (True,  94), (True,  72),  # 24-27 peak→recede
+            (True,  50), (True,  28), (False,  0), (False,  0),  # 28-31 recede→quiet
+        ]
+
+        # Foam fires after each wave peak as the wave washes back
+        foam = [
+            (False, 0), (False, 0), (False, 0), (False, 0),   # 0-3
+            (False, 0), (False, 0), (False, 0), (False, 0),   # 4-7
+            (False, 0), (True, 70), (True, 90), (True, 85),   # 8-10 (foam starts at peak)
+            (True, 68), (True, 45), (True, 25), (False, 0),   # 11-15
+            (False, 0), (False, 0), (False, 0), (False, 0),   # 16-19
+            (False, 0), (False, 0), (False, 0), (False, 0),   # 20-23
+            (False, 0), (True, 65), (True, 88), (True, 80),   # 24-26
+            (True, 60), (True, 38), (True, 20), (False, 0),   # 27-31
+        ]
+
+        # Ambient wash: constant background at low velocity
+        wash  = [(True, 42)] * STEPS
+
+        # Deep swell: continuous sub-bass drone, all steps active
+        swell = [(True, 62)] * STEPS
+
+        # ── Channel definitions ────────────────────────────────────────────────
+        channels = [
+            {
+                "name":         "Deep Swell",
+                "waveform":     "sine",
+                "volume":       0.50,
+                "pan":          0.0,
+                "pitch":        33,   # A1 — deep sub-bass
+                "steps":        [(a, 33, v) for a, v in swell],
+                "params": {
+                    **DEFAULT_SYNTH_PARAMS,
+                    "attack":       0.02,
+                    "decay":        0.04,
+                    "sustain":      0.90,
+                    "release":      0.06,
+                    "filterType":   "lowpass",
+                    "filterFreq":   155,
+                    "filterQ":      1.0,
+                    "vibratoRate":  0.15,
+                    "vibratoDepth": 4,
+                },
+            },
+            {
+                "name":     "Wave Crash",
+                "waveform": "noise",
+                "volume":   0.82,
+                "pan":      0.0,
+                "pitch":    60,
+                "steps":    [(a, 60, v) for a, v in crash],
+                "params": {
+                    **DEFAULT_SYNTH_PARAMS,
+                    "attack":     0.010,
+                    "decay":      0.09,
+                    "sustain":    0.55,
+                    "release":    0.05,
+                    "filterType": "lowpass",
+                    "filterFreq": 580,
+                    "filterQ":    1.2,
+                },
+            },
+            {
+                "name":     "Foam & Spray",
+                "waveform": "noise",
+                "volume":   0.55,
+                "pan":      0.0,
+                "pitch":    60,
+                "steps":    [(a, 60, v) for a, v in foam],
+                "params": {
+                    **DEFAULT_SYNTH_PARAMS,
+                    "attack":     0.04,
+                    "decay":      0.10,
+                    "sustain":    0.40,
+                    "release":    0.06,
+                    "filterType": "highpass",
+                    "filterFreq": 2800,
+                    "filterQ":    1.5,
+                },
+            },
+            {
+                "name":     "Ambient Wash",
+                "waveform": "noise",
+                "volume":   0.38,
+                "pan":      0.0,
+                "pitch":    60,
+                "steps":    [(a, 60, v) for a, v in wash],
+                "params": {
+                    **DEFAULT_SYNTH_PARAMS,
+                    "attack":     0.015,
+                    "decay":      0.05,
+                    "sustain":    0.80,
+                    "release":    0.04,
+                    "filterType": "bandpass",
+                    "filterFreq": 750,
+                    "filterQ":    0.8,
+                },
+            },
+        ]
+
         with Session() as s:
-            proj = Project(name="New Project", plugin_id="chiptune", bpm=120, steps_per_pattern=16,
-                           loop_start=0, loop_end=15)
+            proj = Project(
+                name="Ocean Waves",
+                plugin_id="chiptune",
+                bpm=BPM,
+                steps_per_pattern=STEPS,
+                loop_start=0,
+                loop_end=STEPS - 1,
+            )
             s.add(proj)
             s.flush()
 
@@ -105,24 +229,27 @@ class MainWindow(QMainWindow):
             s.add(pattern)
             s.flush()
 
-            for ch_def in self._plugin.default_channels:
-                default_params = NOISE_SYNTH_PARAMS.copy() if ch_def.waveform_type == "noise" \
-                    else DEFAULT_SYNTH_PARAMS.copy()
+            for ch_def in channels:
                 ch = Channel(
                     pattern_id=pattern.id,
-                    name=ch_def.name,
-                    waveform_type=ch_def.waveform_type,
-                    volume=ch_def.volume,
-                    pan=ch_def.pan,
+                    name=ch_def["name"],
+                    waveform_type=ch_def["waveform"],
+                    volume=ch_def["volume"],
+                    pan=ch_def["pan"],
                     muted=False,
                     locked_ranges=[],
-                    synth_params=default_params,
+                    synth_params=ch_def["params"],
                 )
                 s.add(ch)
                 s.flush()
-                for i in range(16):
-                    s.add(Step(channel_id=ch.id, step_index=i, active=False,
-                               pitch=ch_def.default_pitch, velocity=100))
+                for i, (active, pitch, velocity) in enumerate(ch_def["steps"]):
+                    s.add(Step(
+                        channel_id=ch.id,
+                        step_index=i,
+                        active=active,
+                        pitch=pitch,
+                        velocity=velocity,
+                    ))
             s.commit()
 
     # ── Load project ──────────────────────────────────────────────────────────
