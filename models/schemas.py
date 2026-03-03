@@ -36,6 +36,51 @@ WAVETABLE_SYNTH_PARAMS: dict[str, Any] = {
     "wavetablePreset": 0,
 }
 
+# ── Drum Kit default params ───────────────────────────────────────────────────
+
+KICK_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "attack": 0.001, "decay": 0.18, "sustain": 0.0, "release": 0.05,
+    "filterType": "none",
+}
+
+SNARE_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "attack": 0.001, "decay": 0.12, "sustain": 0.0, "release": 0.04,
+    "filterType": "bandpass", "filterFreq": 1200, "filterQ": 1.5,
+}
+
+HIHAT_CLOSED_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "attack": 0.001, "decay": 0.04, "sustain": 0.0, "release": 0.02,
+    "filterType": "highpass", "filterFreq": 7000,
+}
+
+HIHAT_OPEN_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "attack": 0.001, "decay": 0.20, "sustain": 0.05, "release": 0.15,
+    "filterType": "highpass", "filterFreq": 6000,
+}
+
+CLAP_SYNTH_PARAMS: dict[str, Any] = {
+    **DEFAULT_SYNTH_PARAMS,
+    "attack": 0.001, "decay": 0.08, "sustain": 0.0, "release": 0.06,
+    "filterType": "highpass", "filterFreq": 800,
+}
+
+# ── Per-waveform defaults lookup ─────────────────────────────────────────────
+
+WAVEFORM_DEFAULT_PARAMS: dict[str, dict] = {
+    "noise":        NOISE_SYNTH_PARAMS,
+    "fm":           FM_SYNTH_PARAMS,
+    "wavetable":    WAVETABLE_SYNTH_PARAMS,
+    "kick":         KICK_SYNTH_PARAMS,
+    "snare":        SNARE_SYNTH_PARAMS,
+    "hihat_closed": HIHAT_CLOSED_SYNTH_PARAMS,
+    "hihat_open":   HIHAT_OPEN_SYNTH_PARAMS,
+    "clap":         CLAP_SYNTH_PARAMS,
+}
+
 
 @dataclass
 class StepState:
@@ -54,11 +99,13 @@ class ChannelState:
     steps: list[StepState]
     locked_ranges: list  # list of [start, end] pairs
     synth_params: dict   # 14 live-mutated params
+    plugin_id: str = "chiptune"
 
     def serialize(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "waveform_type": self.waveform_type,
+            "plugin_id": self.plugin_id,
             "volume": self.volume,
             "pan": self.pan,
             "muted": self.muted,

@@ -16,14 +16,24 @@ from ui.channel_settings import ChannelSettingsPanel
 from ui import theme
 
 WAVEFORM_ICONS = {
-    "square":    "▬",
-    "triangle":  "▲",
-    "sawtooth":  "∿",
-    "noise":     "⊞",
-    "sine":      "⌒",
-    "fm":        "≋",
-    "wavetable": "⊡",
+    # Chiptune
+    "square":       "▬",
+    "triangle":     "▲",
+    "sawtooth":     "∿",
+    "noise":        "⊞",
+    "sine":         "⌒",
+    "fm":           "≋",
+    "wavetable":    "⊡",
+    # Drum Kit
+    "kick":         "●",
+    "snare":        "▪",
+    "hihat_closed": "─",
+    "hihat_open":   "╌",
+    "clap":         "◈",
 }
+
+# Waveform types that do not support pitch editing
+UNPITCHED = {"noise", "kick", "snare", "hihat_closed", "hihat_open", "clap"}
 
 LABEL_W = 200
 
@@ -50,7 +60,7 @@ class ChannelStrip(QObject):
         self._channel_index = channel_index
 
         self.label_widget = self._build_label_widget()
-        pitched = live_state.waveform_type != "noise"
+        pitched = live_state.waveform_type not in UNPITCHED
         self.grid_widget  = StepGrid(live_state.steps, channel_index, pitched=pitched)
 
         self.grid_widget.step_toggled.connect(self._on_step_toggled)

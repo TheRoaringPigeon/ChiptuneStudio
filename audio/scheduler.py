@@ -98,7 +98,7 @@ class Sequencer:
     def _fire_step(self, step_idx: int, start_sample: int) -> None:
         step_dur_s = (60.0 / max(1, self.bpm)) / 4.0
 
-        for ch in self.channels:
+        for ch in list(self.channels):  # snapshot so UI mutations don't corrupt iteration
             if ch.muted:
                 continue
             if step_idx >= len(ch.steps):

@@ -1,10 +1,11 @@
 """
 SequencerView — 3-column layout:
-  Left (200px fixed)  : channel label widgets
-  Center (scroll area): TimelineRuler + step grids
+  Left (200px fixed)  : channel label widgets, grouped by plugin
+  Center (scroll area): TimelineRuler + step grids, grouped by plugin
   Right (56px fixed)  : step count buttons (+16/+8/+4, -4/-1)
 
 2D drag-select is handled here via event filters on all StepGrid widgets.
+Channels are visually grouped by plugin_id with a colored header per group.
 """
 
 from __future__ import annotations
@@ -18,8 +19,7 @@ from PyQt6.QtWidgets import (
 
 from models.schemas import (
     ChannelState, StepState,
-    DEFAULT_SYNTH_PARAMS, NOISE_SYNTH_PARAMS,
-    FM_SYNTH_PARAMS, WAVETABLE_SYNTH_PARAMS,
+    DEFAULT_SYNTH_PARAMS,
 )
 from ui.channel_strip import ChannelStrip, LABEL_W
 from ui.timeline_ruler import TimelineRuler
@@ -30,6 +30,7 @@ from ui import theme
 RULER_SPACER_H = 36
 RIGHT_W        = 56
 COLLAPSED_W    = 28   # icon-only collapsed width of the left panel
+GROUP_HDR_H    = 28   # plugin group header height
 
 
 class _SelectionFilter(QObject):
@@ -57,6 +58,11 @@ class SequencerView(QWidget):
         self._channel_states = channel_states
         self._strips: list[ChannelStrip] = []
         self._total_steps: int = len(channel_states[0].steps) if channel_states else 16
+
+        # Plugin group tracking
+        self._groups: dict[str, list[ChannelStrip]] = {}
+        self._group_headers: dict[str, tuple[QWidget, QWidget]] = {}   # plugin_id → (left_hdr, grid_hdr)
+        self._group_containers: dict[str, tuple[QWidget, QWidget]] = {}  # plugin_id → (left_c, grid_c)
 
         self._settings_panel = ChannelSettingsPanel()
 
@@ -196,11 +202,21 @@ class SequencerView(QWidget):
                 strip._row_widget.deleteLater()
         self._strips.clear()
 
-        # Explicit grid layout clear (safety net)
+        # Destroy group containers (which contain the headers as children)
+        for left_c, grid_c in self._group_containers.values():
+            left_c.setParent(None)
+            left_c.deleteLater()
+            grid_c.setParent(None)
+            grid_c.deleteLater()
+        self._groups.clear()
+        self._group_headers.clear()
+        self._group_containers.clear()
+
+        # Safety net — clear any orphaned layout items
+        while self._left_channels_lay.count():
+            self._left_channels_lay.takeAt(0)
         while self._grid_lay.count():
-            item = self._grid_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            self._grid_lay.takeAt(0)
 
         for i, state in enumerate(self._channel_states):
             self._append_strip(state, i)
@@ -213,16 +229,53 @@ class SequencerView(QWidget):
         strip.grid_widget.setProperty("channel_index", idx)
         strip.remove_requested.connect(lambda s=strip: self._remove_channel(s))
 
-        # Left panel: label widget into the channels sub-layout
-        self._left_channels_lay.addWidget(strip.label_widget)
+        plugin_id = getattr(state, "plugin_id", "chiptune")
+
+        # Create group containers on first strip for this plugin
+        if plugin_id not in self._groups:
+            self._groups[plugin_id] = []
+
+            # Resolve plugin name + accent color from registry
+            from plugins.base import PLUGIN_REGISTRY
+            plugin = PLUGIN_REGISTRY.get(plugin_id)
+            plugin_name  = plugin.name  if plugin else plugin_id
+            plugin_color = plugin.color if plugin else theme.CYAN
+
+            left_hdr = self._make_left_header(plugin_name, plugin_color)
+            grid_hdr = self._make_grid_header(plugin_name, plugin_color)
+            self._group_headers[plugin_id] = (left_hdr, grid_hdr)
+
+            # Left group container
+            left_c = QWidget()
+            left_c_lay = QVBoxLayout(left_c)
+            left_c_lay.setContentsMargins(0, 0, 0, 0)
+            left_c_lay.setSpacing(0)
+            left_c_lay.addWidget(left_hdr)
+            self._left_channels_lay.addWidget(left_c)
+
+            # Grid group container
+            grid_c = QWidget()
+            grid_c_lay = QVBoxLayout(grid_c)
+            grid_c_lay.setContentsMargins(0, 0, 0, 0)
+            grid_c_lay.setSpacing(0)
+            grid_c_lay.addWidget(grid_hdr)
+            self._grid_lay.addWidget(grid_c)
+
+            self._group_containers[plugin_id] = (left_c, grid_c)
+
+        left_c, grid_c = self._group_containers[plugin_id]
+
+        # Add label widget to left group container
+        left_c.layout().addWidget(strip.label_widget)
         if self._panel_collapsed:
             strip.collapse()
 
-        # Center scroll: grid row
+        # Add grid row to grid group container
         row = self._grid_widget_row(strip, idx)
         strip._row_widget = row
-        self._grid_lay.addWidget(row)
+        grid_c.layout().addWidget(row)
 
+        self._groups[plugin_id].append(strip)
         self._strips.append(strip)
 
     def _grid_widget_row(self, strip: ChannelStrip, idx: int) -> QWidget:
@@ -235,48 +288,77 @@ class SequencerView(QWidget):
         lay.addStretch(1)
         return row
 
+    # ── Group header factory ──────────────────────────────────────────────────
+
+    def _make_left_header(self, name: str, color: str) -> QWidget:
+        """28px header with colored left border + plugin name."""
+        hdr = QWidget()
+        hdr.setFixedHeight(GROUP_HDR_H)
+        hdr.setStyleSheet(
+            f"background: {theme.BG_PANEL}; border-left: 4px solid {color};"
+        )
+        lay = QHBoxLayout(hdr)
+        lay.setContentsMargins(8, 0, 4, 0)
+        lay.setSpacing(0)
+        lbl = QLabel(name.upper())
+        lbl.setStyleSheet(
+            f"color: {color}; font-size: 10px; font-weight: bold;"
+            f" letter-spacing: 1px; border: none;"
+        )
+        lay.addWidget(lbl)
+        lay.addStretch(1)
+        return hdr
+
+    def _make_grid_header(self, name: str, color: str) -> QWidget:
+        """28px spacer header in the grid area, name right-aligned."""
+        hdr = QWidget()
+        hdr.setFixedHeight(GROUP_HDR_H)
+        hdr.setStyleSheet(f"background: {theme.BG_PANEL};")
+        lay = QHBoxLayout(hdr)
+        lay.setContentsMargins(4, 0, 8, 0)
+        lay.setSpacing(0)
+        lbl = QLabel(name.upper())
+        lbl.setStyleSheet(
+            f"color: {color}; font-size: 10px; font-weight: bold;"
+            f" letter-spacing: 1px; border: none; opacity: 0.5;"
+        )
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+        lay.addWidget(lbl)
+        return hdr
+
     # ── Add / Remove channels ─────────────────────────────────────────────────
 
     def _show_add_channel_menu(self) -> None:
+        # Import triggers register() calls
+        import plugins.chiptune   # noqa: F401
+        import plugins.drum_kit   # noqa: F401
+        import plugins.synth_lead  # noqa: F401
+        from plugins.base import get_all_plugins
+
         menu = QMenu(self)
-        options = [
-            ("▬  Pulse (Square)",  "square"),
-            ("▲  Triangle",        "triangle"),
-            ("∿  Sawtooth",        "sawtooth"),
-            ("⌒  Sine",            "sine"),
-            ("≋  FM (2-op)",       "fm"),
-            ("⊡  Wavetable",       "wavetable"),
-            ("⊞  Noise",           "noise"),
-        ]
-        for label, wtype in options:
-            act = QAction(label, menu)
-            act.triggered.connect(lambda _, w=wtype: self._add_channel(w))
-            menu.addAction(act)
+        for plugin in get_all_plugins():
+            submenu = QMenu(plugin.name, menu)
+            for ch_def in plugin.channels:
+                act = QAction(f"{ch_def.icon}  {ch_def.name}", submenu)
+                act.triggered.connect(
+                    lambda _, p=plugin, c=ch_def: self._add_channel(p, c)
+                )
+                submenu.addAction(act)
+            menu.addMenu(submenu)
+
         btn = self._add_channel_btn
         menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
 
-    def _add_channel(self, waveform_type: str) -> None:
-        _param_map = {
-            "noise":     NOISE_SYNTH_PARAMS,
-            "fm":        FM_SYNTH_PARAMS,
-            "wavetable": WAVETABLE_SYNTH_PARAMS,
-        }
-        params = dict(_param_map.get(waveform_type, DEFAULT_SYNTH_PARAMS))
-        default_names = {
-            "square":    "Pulse",
-            "triangle":  "Triangle",
-            "sawtooth":  "Sawtooth",
-            "sine":      "Sine",
-            "fm":        "FM",
-            "wavetable": "Wavetable",
-            "noise":     "Noise",
-        }
+    def _add_channel(self, plugin, ch_def) -> None:
+        params = {**DEFAULT_SYNTH_PARAMS, **ch_def.synth_params}
         steps = [StepState() for _ in range(self._total_steps)]
         state = ChannelState(
-            name=default_names.get(waveform_type, "Channel"),
-            waveform_type=waveform_type,
-            volume=0.8,
-            pan=0.0,
+            name=ch_def.name,
+            waveform_type=ch_def.waveform_type,
+            plugin_id=plugin.id,
+            volume=ch_def.volume,
+            pan=ch_def.pan,
             muted=False,
             steps=steps,
             locked_ranges=[],
@@ -289,14 +371,30 @@ class SequencerView(QWidget):
         if len(self._strips) <= 1:
             return  # always keep at least one channel
         self._clear_sel_state()
+
         # Detach widgets
         strip.label_widget.setParent(None)
         strip.label_widget.deleteLater()
         strip._row_widget.setParent(None)
         strip._row_widget.deleteLater()
+
         # Update state lists
         self._channel_states.remove(strip.live_state)
         self._strips.remove(strip)
+
+        # Remove from group; destroy group containers if now empty
+        plugin_id = getattr(strip.live_state, "plugin_id", "chiptune")
+        if plugin_id in self._groups:
+            self._groups[plugin_id].remove(strip)
+            if not self._groups[plugin_id]:
+                left_c, grid_c = self._group_containers.pop(plugin_id)
+                left_c.setParent(None)
+                left_c.deleteLater()
+                grid_c.setParent(None)
+                grid_c.deleteLater()
+                del self._groups[plugin_id]
+                del self._group_headers[plugin_id]
+
         # Re-index remaining strips
         for i, s in enumerate(self._strips):
             s._channel_index = i

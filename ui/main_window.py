@@ -9,8 +9,13 @@ from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QMessageBox
 
 from database import Session, init_db
 from models.db import Project, Pattern, Channel, Step
-from models.schemas import ChannelState, ProjectState, StepState, DEFAULT_SYNTH_PARAMS, NOISE_SYNTH_PARAMS
-from plugins.chiptune import ChiptunePlugin
+from models.schemas import (
+    ChannelState, ProjectState, StepState,
+    DEFAULT_SYNTH_PARAMS, WAVEFORM_DEFAULT_PARAMS,
+)
+import plugins.chiptune   # noqa: F401 — triggers register()
+import plugins.drum_kit   # noqa: F401 — triggers register()
+import plugins.synth_lead  # noqa: F401 — triggers register()
 from audio.engine import AudioEngine
 from audio.scheduler import Sequencer
 from ui.toolbar import ToolbarWidget
@@ -23,7 +28,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ChiptuneStudio")
         self.resize(1200, 600)
 
-        self._plugin = ChiptunePlugin()
         self._engine = AudioEngine()
         self._scheduler = Sequencer(self._engine)
         self._current_project_id: int | None = None
@@ -273,13 +277,15 @@ class MainWindow(QMainWindow):
                     StepState(active=st.active, pitch=st.pitch, velocity=st.velocity)
                     for st in sorted(ch.steps, key=lambda x: x.step_index)
                 ]
-                # Merge saved params with defaults (don't lose new keys)
-                default_params = NOISE_SYNTH_PARAMS.copy() if ch.waveform_type == "noise" \
-                    else DEFAULT_SYNTH_PARAMS.copy()
+                # Merge saved params with waveform-appropriate defaults
+                default_params = WAVEFORM_DEFAULT_PARAMS.get(
+                    ch.waveform_type, DEFAULT_SYNTH_PARAMS
+                ).copy()
                 params = {**default_params, **(ch.synth_params or {})}
                 channel_states.append(ChannelState(
                     name=ch.name,
                     waveform_type=ch.waveform_type,
+                    plugin_id=getattr(ch, "plugin_id", "chiptune"),
                     volume=ch.volume,
                     pan=ch.pan,
                     muted=ch.muted,
@@ -303,8 +309,9 @@ class MainWindow(QMainWindow):
         # Wire loop ruler → scheduler
         self._seq_view._ruler.loop_changed.connect(self._on_loop_changed)
 
-        # Give live channel refs to scheduler
-        self._scheduler.channels = self._seq_view.get_channel_states()
+        # Give the scheduler the live _channel_states list so add/remove during
+        # playback are visible immediately without stop/start.
+        self._scheduler.channels = self._seq_view._channel_states
         self._scheduler.total_steps = total_steps
         self._scheduler.bpm = self._toolbar.current_bpm()
         loop_start, loop_end = self._seq_view.get_loop_region()
@@ -353,6 +360,7 @@ class MainWindow(QMainWindow):
                     pattern_id=pattern.id,
                     name=ch_data["name"],
                     waveform_type=ch_data["waveform_type"],
+                    plugin_id=ch_data.get("plugin_id", "chiptune"),
                     volume=ch_data["volume"],
                     pan=ch_data["pan"],
                     muted=ch_data["muted"],
@@ -386,7 +394,7 @@ class MainWindow(QMainWindow):
         self._scheduler.loop_start = loop_start
         self._scheduler.loop_end   = loop_end
         if self._seq_view:
-            self._scheduler.channels = self._seq_view.get_channel_states()
+            self._scheduler.channels = self._seq_view._channel_states
         self._scheduler.play()
         self._toolbar.set_playing(True)
 

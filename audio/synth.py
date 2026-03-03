@@ -190,6 +190,54 @@ def _wavetable(n: int, sr: int, base_freq: float, p: dict) -> np.ndarray:
     return table[indices]
 
 
+def _kick(n: int, sr: int, base_freq: float, p: dict) -> np.ndarray:
+    """Kick drum: sine with pitch sweep (4×freq → freq) over 80ms + 15ms noise click."""
+    sweep_samples = min(int(0.08 * sr), n)
+    click_samples = min(int(0.015 * sr), n)
+
+    # Frequency array: sweep from 4×base_freq down to base_freq
+    freq_arr = np.full(n, base_freq, dtype=np.float64)
+    if sweep_samples > 0:
+        freq_arr[:sweep_samples] = np.linspace(
+            base_freq * 4.0, base_freq, sweep_samples, dtype=np.float64
+        )
+
+    # Sine body via phase accumulation
+    phase = np.cumsum(freq_arr / sr)
+    sine_body = np.sin(2.0 * np.pi * phase).astype(np.float32)
+
+    # Noise transient click for first 15ms (decaying)
+    noise_click = np.zeros(n, dtype=np.float32)
+    if click_samples > 0:
+        click_env = np.linspace(1.0, 0.0, click_samples, dtype=np.float32)
+        noise_click[:click_samples] = (
+            np.random.uniform(-1.0, 1.0, click_samples).astype(np.float32) * click_env
+        )
+
+    return (sine_body * 0.9 + noise_click * 0.1).astype(np.float32)
+
+
+def _snare(n: int, sr: int, p: dict) -> np.ndarray:
+    """Snare: bandpass noise (70%) + 200 Hz sine body (30%)."""
+    noise = np.random.uniform(-1.0, 1.0, n).astype(np.float32)
+
+    # Bandpass filter around 1200 Hz
+    nyq = sr / 2.0
+    freq = 1200.0
+    q = 1.5
+    bw = freq / max(q, 0.1)
+    low  = np.clip(freq - bw / 2.0, 20.0, nyq - 2.0)
+    high = np.clip(freq + bw / 2.0, low + 1.0, nyq - 1.0)
+    sos = butter(2, [low / nyq, high / nyq], btype="band", output="sos")
+    noise_bp = sosfilt(sos, noise).astype(np.float32)
+
+    # 200 Hz sine body
+    t = np.arange(n, dtype=np.float32) / sr
+    sine_body = np.sin(2.0 * np.pi * 200.0 * t).astype(np.float32)
+
+    return (noise_bp * 0.7 + sine_body * 0.3).astype(np.float32)
+
+
 def _apply_filter(wave: np.ndarray, p: dict) -> np.ndarray:
     ftype = str(p["filterType"])
     if ftype == "none":
@@ -246,6 +294,12 @@ def render_note(
 
     # Generate waveform
     if waveform_type == "noise":
+        wave = _noise(n)
+    elif waveform_type == "kick":
+        wave = _kick(n, SAMPLE_RATE, base_freq, p)
+    elif waveform_type == "snare":
+        wave = _snare(n, SAMPLE_RATE, p)
+    elif waveform_type in ("hihat_closed", "hihat_open", "clap"):
         wave = _noise(n)
     elif waveform_type == "sine":
         wave = _sine(n, SAMPLE_RATE, base_freq, p)

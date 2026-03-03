@@ -51,6 +51,7 @@ class Channel(Base):
     pattern_id: Mapped[int] = mapped_column(Integer, ForeignKey("patterns.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     waveform_type: Mapped[str] = mapped_column(String(32), default="square")
+    plugin_id: Mapped[str] = mapped_column(String(64), default="chiptune", server_default="chiptune")
     volume: Mapped[float] = mapped_column(Float, default=0.8)
     pan: Mapped[float] = mapped_column(Float, default=0.0)
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
